@@ -60,6 +60,7 @@ public class CoGroup {
 
     public void shutdown(){
         shutdown = true;
+        ioGroup.shutdown();
     }
 
     public final boolean isShutdown(){
@@ -212,8 +213,8 @@ public class CoGroup {
     static abstract class IoGroup implements Runnable {
         final static Logger log = LoggerFactory.getLogger(IoGroup.class);
 
-        final String name;
-        final CoGroup coGroup;
+        protected final String name;
+        protected final CoGroup coGroup;
 
         protected Thread runner;
         private int nextId;
@@ -235,6 +236,10 @@ public class CoGroup {
             t.setDaemon(coGroup.isDaemon());
             t.start();
             runner = t;
+        }
+
+        public void shutdown(){
+
         }
 
         public void await(){
@@ -286,7 +291,11 @@ public class CoGroup {
                 }
 
                 for(;!coGroup.isStopped();){
-                    final int n = selector.select();
+                    // 1. initialize connections
+                    handleConnRequests();
+
+                    // 2. select events
+                    final int n = selector.select(1000L);
                     if(n > 0){
                         final Set<SelectionKey> keys = selector.selectedKeys();
                         final Iterator<SelectionKey> i = keys.iterator();
@@ -296,18 +305,44 @@ public class CoGroup {
                                 continue;
                             }
                             if(key.isAcceptable()){
+                                handleAcception(key);
                                 continue;
                             }
                             if(key.isConnectable()){
+                                handleConnection(key);
                                 continue;
                             }
                             if(key.isReadable()){
-
+                                handleRead(key);
                             }
                             if(key.isValid() && key.isWritable()){
+                                handleWrite(key);
+                            }
+                        }// key-loop
+                    }
 
+                    // 3. handle shutdown
+                    if(coGroup.isShutdown()){
+                        log.debug("{}: shutdown", name);
+                        // 3.1 not accept any new connection
+                        IoUtils.close(serverChan);
+                        // 3.2 check other connections closed
+                        final Set<SelectionKey> keys = selector.keys();
+                        final int keySize = keys.size();
+                        if(keySize == 0){
+                            break;
+                        }
+                        int closes = 0;
+                        for(Iterator<SelectionKey> i = keys.iterator();i.hasNext();){
+                            final SelectableChannel chan = i.next().channel();
+                            if(!chan.isOpen()){
+                                ++closes;
                             }
                         }
+                        if(closes == keySize){
+                            break;
+                        }
+                        log.debug("{}: selection keys {}, closed channels {}", name, keySize, closes);
                     }
                 }// event-loop
 
@@ -316,6 +351,113 @@ public class CoGroup {
             }finally {
                 cleanup();
             }
+        }
+
+        private void handleAcception(final SelectionKey key) throws IOException {
+            final ServerSocketChannel serverChan = (ServerSocketChannel)key.channel();
+            final SocketChannel chan = serverChan.accept();
+            if(chan == null){
+                return;
+            }
+
+            boolean failed = true;
+            NioCoChannel coChan = null;
+            try{
+                chan.configureBlocking(false);
+                final SelectionKey selKey = chan.register(selector, SelectionKey.OP_READ);
+                coChan = new NioCoChannel(nextId(), this, chan, selKey);
+                coGroup.channelInitializer().initialize(coChan, true);
+                if(coChan.handler() == null){
+                    log.warn("{}: Channel handler not set, so close the channel", name);
+                    return;
+                }
+                log.debug("{}: start a new coChannel {}", name, coChan.name);
+                coChan.resume();
+                failed = false;
+            }catch (final Throwable cause){
+                if(coChan == null || coChan.handler() == null){
+                    log.warn(name+": uncaught exception", cause);
+                }else{
+                    coChan.handler().uncaught(cause);
+                }
+                return;
+            }finally {
+                if(failed){
+                    IoUtils.close(chan);
+                }
+            }
+        }
+
+        protected void handleConnection(final SelectionKey key){
+            final NioCoChannel coChan = (NioCoChannel)key.attachment();
+            final SocketChannel chan  = coChan.chan;
+            boolean failed = true;
+            try{
+                chan.finishConnect();
+                log.debug("{}: start a new coChannel {}", name, coChan.name);
+                coChan.resume();
+                failed = false;
+            }catch(final IOException cause){
+                coChan.handler().uncaught(cause);
+                return;
+            }finally {
+                if(failed){
+                    IoUtils.close(coChan);
+                }
+            }
+        }
+
+        protected void handleRead(final SelectionKey key) {
+            final NioCoChannel coChan = (NioCoChannel) key.attachment();
+            coChan.resume();
+        }
+
+        protected void handleWrite(final SelectionKey key) {
+            final NioCoChannel coChan = (NioCoChannel) key.attachment();
+            coChan.resume();
+        }
+
+        private void handleConnRequests(){
+            for(;;){
+                final ConnectRequest req = creqQueue.poll();
+                if(req == null){
+                    break;
+                }
+                CoHandler handler = req.handler;
+                boolean failed = true;
+                SocketChannel chan = null;
+                try{
+                    chan = SocketChannel.open();
+                    final NioCoChannel coChan = new NioCoChannel(nextId(), this, chan);
+                    coGroup.channelInitializer().initialize(coChan, false);
+                    if(handler == null && (handler=coChan.handler()) == null){
+                        log.warn("{}: Channel handler not set, so close the channel");
+                        break;
+                    }
+                    coChan.handler(handler);
+                    log.debug("{}: connect to {}", name, req.remote);
+                    chan.configureBlocking(false);
+                    chan.register(selector, SelectionKey.OP_CONNECT, coChan);
+                    chan.connect(req.remote);
+                    failed = false;
+                }catch(final Throwable cause){
+                    if(handler == null){
+                        log.warn(name+": Channel handler not set, uncaught exception", cause);
+                    }else{
+                        handler.uncaught(cause);
+                    }
+                    return;
+                }finally {
+                    if(failed){
+                        IoUtils.close(chan);
+                    }
+                }
+            }
+        }
+
+        @Override
+        public void shutdown(){
+            selector.wakeup();
         }
 
         @Override
@@ -337,6 +479,141 @@ public class CoGroup {
             creqQueue.offer(request);
             selector.wakeup();
         }
+
+        static class NioCoChannel extends CoChannel {
+            final NioGroup ioGroup;
+            final SocketChannel chan;
+            private SelectionKey selKey;
+
+            public NioCoChannel(final int id, NioGroup ioGroup, SocketChannel chan){
+                this(id, ioGroup, chan, null);
+            }
+
+            public NioCoChannel(final int id, NioGroup ioGroup, SocketChannel chan, SelectionKey selKey){
+                super(id, ioGroup.coGroup);
+                this.ioGroup = ioGroup;
+                this.chan = chan;
+                this.selKey = selKey;
+                if(selKey != null){
+                    selKey.attach(this);
+                }
+            }
+
+            @Override
+            public int read(Continuation co, ByteBuffer dst) throws IOException {
+                if(!dst.hasRemaining()){
+                    return 0;
+                }
+                int n = 0;
+                boolean readable = false;
+                try{
+                    for(;dst.hasRemaining();){
+                        final int i = chan.read(dst);
+                        if(i == -1){
+                            if(n == 0){
+                                return -1;
+                            }
+                            break;
+                        }
+                        if(i == 0){
+                            if(n > 0){
+                                return n;
+                            }
+                            enableRead();
+                            readable = true;
+                            co.suspend();
+                            continue;
+                        }
+                        n += i;
+                    }
+                    return n;
+                }finally {
+                    if(readable){
+                        disableRead();
+                    }
+                }
+            }
+
+            @Override
+            public int write(Continuation co, ByteBuffer src) throws IOException {
+                if(!src.hasRemaining()){
+                    return 0;
+                }
+                int n = 0;
+                try{
+                    enableWrite(); // must first enable write?
+                    co.suspend();
+                    for(;src.hasRemaining();){
+                        final int i = chan.write(src);
+                        if(i == 0){
+                            enableWrite();
+                            co.suspend();
+                            continue;
+                        }
+                        n += i;
+                    }
+                    return n;
+                }finally {
+                    disableWrite();
+                }
+            }
+
+            @Override
+            public boolean isOpen() {
+                return chan.isOpen();
+            }
+
+            @Override
+            public void close() {
+                IoUtils.close(chan);
+                log.debug("{}: {} closed", group.name, name);
+            }
+
+            protected void enableRead()throws IOException {
+                final int op = SelectionKey.OP_READ;
+                if(selKey == null){
+                    selKey = chan.register(ioGroup.selector, op, this);
+                }else{
+                    final int ops = selKey.interestOps();
+                    if((ops & op) == 0){
+                        selKey.interestOps(ops | op);
+                    }
+                }
+            }
+
+            protected final void disableRead(){
+                final int op = SelectionKey.OP_READ;
+                if(selKey != null){
+                    final int ops = selKey.interestOps();
+                    if((ops & op) != 0){
+                        selKey.interestOps(ops & ~op);
+                    }
+                }
+            }
+
+            protected final void enableWrite()throws IOException {
+                final int op = SelectionKey.OP_WRITE;
+                if(selKey == null){
+                    selKey = chan.register(ioGroup.selector, op, this);
+                }else{
+                    final int ops = selKey.interestOps();
+                    if((ops & op) == 0){
+                        selKey.interestOps(ops | op);
+                    }
+                }
+            }
+
+            protected final void disableWrite() {
+                final int op = SelectionKey.OP_WRITE;
+                if(selKey != null){
+                    final int ops = selKey.interestOps();
+                    if((ops & op) != 0){
+                        selKey.interestOps(ops & ~op);
+                    }
+                }
+            }
+
+        }// NioCoChannel
 
     }// NioGroup
 
@@ -670,6 +947,7 @@ public class CoGroup {
             @Override
             public void close() {
                 IoUtils.close(chan);
+                log.debug("{}: {} closed", group.name, name);
             }
 
             // Running in io threads.
