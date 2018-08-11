@@ -25,7 +25,6 @@ public class CoGroupTest {
         final CoGroup clientGroup = CoGroup.newBuilder()
                 .useAio(true)
                 .setName("clientCoGroup")
-                .channelInitializer((channel, sside) -> {})
                 .build();
         clientGroup.start();
 

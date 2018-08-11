@@ -36,7 +36,7 @@ public class CoGroup {
     private volatile boolean shutdown;
     private IoGroup ioGroup;
 
-    private ChannelInitializer initializer;
+    private ChannelInitializer initializer = ChannelInitializer.NOOP;
 
     protected CoGroup(){
 
@@ -210,6 +210,8 @@ public class CoGroup {
     }
 
     static abstract class IoGroup implements Runnable {
+        final static Logger log = LoggerFactory.getLogger(IoGroup.class);
+
         final String name;
         final CoGroup coGroup;
 
@@ -249,6 +251,12 @@ public class CoGroup {
             return nextId++;
         }
 
+        protected void cleanup(){
+            coGroup.stopped = true;
+            coGroup.ioGroup = null;
+            log.info("Stopped");
+        }
+
     }// IoGroup
 
     interface ResultHandler {
@@ -271,7 +279,11 @@ public class CoGroup {
         @Override
         public void run(){
             try{
-                log.info("Started on {}:{}", coGroup.host, coGroup.port);
+                if(coGroup.host != null){
+                    log.info("Started on {}:{}", coGroup.host, coGroup.port);
+                }else{
+                    log.info("Started");
+                }
 
                 for(;!coGroup.isStopped();){
                     final int n = selector.select();
@@ -297,16 +309,21 @@ public class CoGroup {
                             }
                         }
                     }
-                }
+                }// event-loop
 
-                IoUtils.close(serverChan);
-                IoUtils.close(selector);
             }catch(final IOException e){
                 log.error("Nio group fatal error", e);
             }finally {
-                coGroup.stopped = true;
-                coGroup.ioGroup = null;
+                cleanup();
             }
+        }
+
+        @Override
+        protected void cleanup(){
+            creqQueue.clear();
+            IoUtils.close(serverChan);
+            IoUtils.close(selector);
+            super.cleanup();
         }
 
         @Override
@@ -328,6 +345,7 @@ public class CoGroup {
 
         final AsynchronousServerSocketChannel serverChan;
         final AsynchronousChannelGroup chanGroup;
+        CoAcceptor coAcceptor = null;
 
         public AioGroup(CoGroup coGroup, String name, AsynchronousServerSocketChannel serverChan,
                         AsynchronousChannelGroup chanGroup){
@@ -339,12 +357,13 @@ public class CoGroup {
         @Override
         public void run() {
             try{
-                CoAcceptor coAcceptor = null;
                 if(serverChan != null){
                     coAcceptor = new CoAcceptor(this, serverChan);
                     coAcceptor.start();
+                    log.info("Started on {}:{}", coGroup.host, coGroup.port);
+                }else{
+                    log.info("Started");
                 }
-                log.info("Started on {}:{}", coGroup.host, coGroup.port);
 
                 for (;!coGroup.isStopped();){
                     final ResultHandler handler = cQueue.poll(1L, TimeUnit.SECONDS);
@@ -361,19 +380,23 @@ public class CoGroup {
                         }
                         break;
                     }
-                }
+                } // poll-loop
 
-                if(coAcceptor != null){
-                    coAcceptor.stop();
-                }
-                IoUtils.close(serverChan);
-                cQueue.clear();
             }catch(InterruptedException e){
                 log.warn("Exit: interrupted");
             }finally{
-                coGroup.stopped = true;
-                coGroup.ioGroup = null;
+                cleanup();
             }
+        }
+
+        @Override
+        protected void cleanup(){
+            if(coAcceptor != null){
+                coAcceptor.stop();
+            }
+            IoUtils.close(serverChan);
+            cQueue.clear();
+            super.cleanup();
         }
 
         @Override

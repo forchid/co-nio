@@ -9,6 +9,11 @@ package io.conio;
  */
 public interface ChannelInitializer {
 
+    ChannelInitializer NOOP = new ChannelInitializer(){
+        @Override
+        public void initialize(CoChannel channel, boolean serverSide){}
+    };
+
     void initialize(CoChannel channel, boolean serverSide);
 
 }
