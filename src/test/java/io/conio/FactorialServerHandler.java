@@ -59,15 +59,12 @@ public class FactorialServerHandler implements CoHandler {
             status = 0x1;
         }else{
             // execute computation task in worker thread instead of in coroutine!
-            CoFuture<BigInteger> f = channel.execute(new Callable<BigInteger>(){
-                @Override
-                public BigInteger call(){
-                    BigInteger factor = BigInteger.ONE;
-                    for(int i = 2; i <= n; ++i){
-                        factor = factor.multiply(new BigInteger(i+""));
-                    }
-                    return factor;
+            final CoFuture<BigInteger> f = channel.execute(() -> {
+                BigInteger factor = BigInteger.ONE;
+                for(int i = 2; i <= n; ++i){
+                    factor = factor.multiply(new BigInteger(i+""));
                 }
+                return factor;
             });
             try {
                 final BigInteger factor = f.get(co);

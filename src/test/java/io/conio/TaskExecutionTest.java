@@ -6,7 +6,9 @@ import org.slf4j.LoggerFactory;
 
 public class TaskExecutionTest {
     final static Logger log = LoggerFactory.getLogger(TaskExecutionTest.class);
+
     final static String HOST = "localhost";
+    final static int maxConns = 500;
 
     @Test
     public void testAioTaskExecution(){
@@ -29,7 +31,7 @@ public class TaskExecutionTest {
         clientGroup.start();
 
         final long ts = System.currentTimeMillis();
-        final int n = 200;
+        final int n = maxConns;
         final FactorialClientHandler handlers[] = new FactorialClientHandler[n];
         for(int i = 0; i < n; ++i){
             final FactorialClientHandler handler = new FactorialClientHandler();
@@ -77,7 +79,7 @@ public class TaskExecutionTest {
         clientGroup.start();
 
         final long ts = System.currentTimeMillis();
-        final int n = 200;
+        final int n = maxConns;
         final FactorialClientHandler handlers[] = new FactorialClientHandler[n];
         for(int i = 0; i < n; ++i){
             final FactorialClientHandler handler = new FactorialClientHandler();

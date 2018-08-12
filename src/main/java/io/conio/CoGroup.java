@@ -39,7 +39,7 @@ public class CoGroup {
     private IoGroup ioGroup;
 
     private ChannelInitializer initializer = ChannelInitializer.NOOP;
-    private int workerThreads = Runtime.getRuntime().availableProcessors() + 1;
+    private int workerThreads = Runtime.getRuntime().availableProcessors();
     private ExecutorService workerThreadPool;
 
     protected CoGroup(){

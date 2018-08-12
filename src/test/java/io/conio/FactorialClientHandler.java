@@ -44,7 +44,7 @@ public class FactorialClientHandler extends BaseTest implements CoHandler {
         }catch (final IOException cause){
             log.warn("IO error", cause);
         }finally {
-            log.info("{}!: max-length = {}", i, maxlen);
+            //log.info("{}!: max-length = {}", i, maxlen);
             IoUtils.close(channel);
         }
     }
