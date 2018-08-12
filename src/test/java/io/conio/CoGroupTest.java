@@ -36,7 +36,7 @@ public class CoGroupTest {
             clientGroup.connect(HOST, serverGroup.getPort(), handler);
             handlers[i] = handler;
         }
-        sleep(60000L);
+        sleep(15000L);
         clientGroup.shutdown();
         clientGroup.await();
         final long sec = (System.currentTimeMillis() - ts) / 1000L;
@@ -81,7 +81,7 @@ public class CoGroupTest {
             clientGroup.connect(HOST, serverGroup.getPort(), handler);
             handlers[i] = handler;
         }
-        sleep(60000L);
+        sleep(15000L);
         clientGroup.shutdown();
         clientGroup.await();
         final long sec = (System.currentTimeMillis() - ts) / 1000L;
@@ -126,7 +126,7 @@ public class CoGroupTest {
             clientGroup.connect(HOST, serverGroup.getPort(), handler);
             handlers[i] = handler;
         }
-        sleep(300000L);
+        sleep(30000L);
         clientGroup.shutdown();
         clientGroup.await();
         final long sec = (System.currentTimeMillis() - ts) / 1000L;

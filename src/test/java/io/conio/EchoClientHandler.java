@@ -9,14 +9,11 @@ import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.Arrays;
 
-public class EchoClientHandler implements CoHandler {
+public class EchoClientHandler extends BaseTest implements CoHandler {
     final static Logger log = LoggerFactory.getLogger(EchoClientHandler.class);
 
     final ByteBuffer buffer;
     final byte[] data;
-
-    // statistics
-    long bytes = 0L, times = 0L;
 
     public EchoClientHandler(){
         this(8192);

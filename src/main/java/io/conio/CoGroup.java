@@ -7,10 +7,12 @@ import java.nio.channels.*;
 import java.util.Iterator;
 import java.util.Set;
 import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import com.offbynull.coroutines.user.Continuation;
 import com.offbynull.coroutines.user.Coroutine;
 import com.offbynull.coroutines.user.CoroutineRunner;
+import io.conio.util.CoFuture;
 import io.conio.util.IoUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -37,6 +39,8 @@ public class CoGroup {
     private IoGroup ioGroup;
 
     private ChannelInitializer initializer = ChannelInitializer.NOOP;
+    private int workerThreads = Runtime.getRuntime().availableProcessors() + 1;
+    private ExecutorService workerThreadPool;
 
     protected CoGroup(){
 
@@ -52,6 +56,10 @@ public class CoGroup {
         }
         group.start();
         ioGroup = group;
+    }
+
+    public final boolean inGroup(){
+        return ioGroup.inGroup();
     }
 
     public final boolean isStopped(){
@@ -101,19 +109,21 @@ public class CoGroup {
         ioGroup.connect(new ConnectRequest(remote, handler));
     }
 
-    public void connect(Continuation co, CoChannel coOwner, String host, int port){
+    public void connect(Continuation co, CoChannel coOwner, String host, int port)throws IOException {
         connect(co, coOwner, new InetSocketAddress(host, port));
     }
 
-    public void connect(Continuation co, CoChannel coOwner, String host, int port, CoHandler handler){
+    public void connect(Continuation co, CoChannel coOwner, String host, int port,
+                        CoHandler handler)throws IOException {
         connect(co, coOwner, new InetSocketAddress(host, port), handler);
     }
 
-    public void connect(Continuation co, CoChannel coOwner, InetSocketAddress remote){
+    public void connect(Continuation co, CoChannel coOwner, InetSocketAddress remote)throws IOException {
         connect(co, coOwner, remote, null);
     }
 
-    public void connect(Continuation co, CoChannel coOwner, InetSocketAddress remote, CoHandler handler){
+    public void connect(Continuation co, CoChannel coOwner,
+                        InetSocketAddress remote, CoHandler handler)throws IOException {
         if(isStopped()){
             throw new IllegalStateException(name+" has stopped");
         }
@@ -213,6 +223,8 @@ public class CoGroup {
     static abstract class IoGroup implements Runnable {
         final static Logger log = LoggerFactory.getLogger(IoGroup.class);
 
+        protected final BlockingQueue<CoTask> coQueue;
+
         protected final String name;
         protected final CoGroup coGroup;
 
@@ -222,12 +234,14 @@ public class CoGroup {
         protected IoGroup(CoGroup coGroup, String name){
             this.coGroup = coGroup;
             this.name = name;
+            this.coQueue = new LinkedTransferQueue<>();
         }
 
         @Override
         public abstract void run();
 
-        public abstract void connect(Continuation co, CoChannel coOwner, ConnectRequest request);
+        public abstract void connect(Continuation co, CoChannel coOwner,
+                                     ConnectRequest request) throws IOException;
 
         public abstract void connect(ConnectRequest request);
 
@@ -256,20 +270,105 @@ public class CoGroup {
             return nextId++;
         }
 
+        protected boolean offer(CoTask coTask){
+           return coQueue.offer(coTask);
+        }
+
         protected void cleanup(){
             coGroup.stopped = true;
             coGroup.ioGroup = null;
+            coQueue.clear();
+            coGroup.workerThreadPool.shutdown();
             log.info("Stopped");
         }
 
     }// IoGroup
 
-    interface ResultHandler {
-        void handle();
+    interface CoTask extends Runnable {}
+
+    boolean offer(CoTask coTask){
+        return ioGroup.offer(coTask);
     }
 
+    <V> CoFuture<V> execute(CoChannel chan, final Callable<V> callable){
+        final CoGroup group = chan.group();
+        if(group != this){
+            throw new IllegalArgumentException("CoChannel group not this group");
+        }
+        final CompletableFuture<V> f = CompletableFuture.supplyAsync(()->{
+            try {
+                return callable.call();
+            }catch(final Exception e){
+                if(e instanceof RuntimeException){
+                    throw (RuntimeException)e;
+                }
+                throw new RuntimeException(e);
+            }
+        }, group.workerThreadPool);
+        final CoFutureImpl<V> cf = new CoFutureImpl<>(chan);
+        f.handle((v, e) ->{
+            if(e != null){
+                cf.setException(e);
+            }else{
+                cf.setValue(v);
+            }
+            offer(cf);
+            return v;
+        });
+        return cf;
+    }// execute()
+
+    static class CoFutureImpl<V> implements CoFuture<V>, CoTask {
+        final CoChannel chan;
+        private boolean waited;
+
+        private volatile boolean done;
+        private V value;
+        private Throwable exception;
+
+        public CoFutureImpl(CoChannel chan){
+            this.chan = chan;
+        }
+
+        @Override
+        public V get(Continuation co) throws ExecutionException {
+            for(;!isDone();){
+                waited = true;
+                co.suspend();
+            }
+            if(exception != null){
+                if(exception instanceof  ExecutionException){
+                    throw (ExecutionException)exception;
+                }
+                throw new ExecutionException(exception);
+            }
+            return value;
+        }
+
+        @Override
+        public boolean isDone() {
+            return done;
+        }
+
+        void setException(Throwable exception){
+            this.exception = exception;
+            this.done = true;
+        }
+
+        void setValue(V value){
+            this.value = value;
+            this.done = true;
+        }
+
+        @Override
+        public void run() {
+            if(waited){
+                chan.resume();
+            }
+        }
+    }// CoFutureImpl
+
     static class NioGroup extends  IoGroup {
-        final BlockingQueue<ConnectRequest> creqQueue;
 
         final ServerSocketChannel serverChan;
         final Selector selector;
@@ -278,7 +377,6 @@ public class CoGroup {
             super(coGroup, name);
             this.serverChan = serverChan;
             this.selector = selector;
-            this.creqQueue = new LinkedTransferQueue<>();
         }
 
         @Override
@@ -291,8 +389,8 @@ public class CoGroup {
                 }
 
                 for(;!coGroup.isStopped();){
-                    // 1. initialize connections
-                    handleConnRequests();
+                    // 1. result handlers
+                    handleCoTasks();
 
                     // 2. select events
                     final int n = selector.select(1000L);
@@ -353,6 +451,15 @@ public class CoGroup {
             }
         }
 
+        @Override
+        protected boolean offer(CoTask handler){
+            final boolean succ = super.offer(handler);
+            if(succ){
+                selector.wakeup();
+            }
+            return succ;
+        }
+
         private void handleAcception(final SelectionKey key) throws IOException {
             final ServerSocketChannel serverChan = (ServerSocketChannel)key.channel();
             final SocketChannel chan = serverChan.accept();
@@ -389,16 +496,21 @@ public class CoGroup {
         }
 
         protected void handleConnection(final SelectionKey key){
-            final NioCoChannel coChan = (NioCoChannel)key.attachment();
+            final NioConnectHandler handler = (NioConnectHandler)key.attachment();
+            key.attach(null);
+
+            final NioCoChannel coChan = handler.coChan;
             final SocketChannel chan  = coChan.chan;
             boolean failed = true;
             try{
                 chan.finishConnect();
                 log.debug("{}: start a new coChannel {}", name, coChan.name);
                 coChan.resume();
+                handler.run();
                 failed = false;
-            }catch(final IOException cause){
-                coChan.handler().uncaught(cause);
+            }catch(final Throwable cause){
+                handler.setCause(cause);
+                handler.run();
                 return;
             }finally {
                 if(failed){
@@ -417,41 +529,13 @@ public class CoGroup {
             coChan.resume();
         }
 
-        private void handleConnRequests(){
+        private void handleCoTasks(){
             for(;;){
-                final ConnectRequest req = creqQueue.poll();
-                if(req == null){
+                final CoTask coTask = coQueue.poll();
+                if(coTask == null){
                     break;
                 }
-                CoHandler handler = req.handler;
-                boolean failed = true;
-                SocketChannel chan = null;
-                try{
-                    chan = SocketChannel.open();
-                    final NioCoChannel coChan = new NioCoChannel(nextId(), this, chan);
-                    coGroup.channelInitializer().initialize(coChan, false);
-                    if(handler == null && (handler=coChan.handler()) == null){
-                        log.warn("{}: Channel handler not set, so close the channel");
-                        break;
-                    }
-                    coChan.handler(handler);
-                    log.debug("{}: connect to {}", name, req.remote);
-                    chan.configureBlocking(false);
-                    chan.register(selector, SelectionKey.OP_CONNECT, coChan);
-                    chan.connect(req.remote);
-                    failed = false;
-                }catch(final Throwable cause){
-                    if(handler == null){
-                        log.warn(name+": Channel handler not set, uncaught exception", cause);
-                    }else{
-                        handler.uncaught(cause);
-                    }
-                    return;
-                }finally {
-                    if(failed){
-                        IoUtils.close(chan);
-                    }
-                }
+                coTask.run();
             }
         }
 
@@ -462,22 +546,117 @@ public class CoGroup {
 
         @Override
         protected void cleanup(){
-            creqQueue.clear();
             IoUtils.close(serverChan);
             IoUtils.close(selector);
             super.cleanup();
         }
 
         @Override
-        public void connect(Continuation co, CoChannel coOwner, ConnectRequest request){
-            creqQueue.offer(request);
-            selector.wakeup();
+        public void connect(Continuation co, CoChannel coOwner,
+                            ConnectRequest request)throws IOException {
+            new NioConnectHandler(this, request).connect(co, coOwner);
         }
 
         @Override
         public void connect(ConnectRequest request){
-            creqQueue.offer(request);
-            selector.wakeup();
+            new NioConnectHandler(this, request).connect();
+        }
+
+        static class NioConnectHandler implements CoTask {
+            final static int STEP_INIT = 0;
+            final static int STEP_CONN = 1;
+            final static int STEP_COMP = 2;
+
+            private int step = STEP_INIT;
+
+            private final NioGroup ioGroup;
+            private final ConnectRequest request;
+
+            NioCoChannel coChan;
+            CoChannel coOwner;
+            private Throwable cause;
+
+            public NioConnectHandler(NioGroup ioGroup, ConnectRequest request){
+                this.ioGroup = ioGroup;
+                this.request = request;
+            }
+
+            public void connect(Continuation co, CoChannel coOwner)throws IOException {
+                connect();
+                this.coOwner = coOwner;
+                co.suspend();
+                if(cause != null){
+                    if(cause instanceof IOException){
+                        throw (IOException)cause;
+                    }
+                    throw new IOException(cause);
+                }
+            }
+
+            public void connect(){
+                ioGroup.offer(this);
+            }
+
+            public void setCause(Throwable cause){
+                this.cause = cause;
+            }
+
+            @Override
+            public void run() {
+                switch(step){
+                    case STEP_INIT:
+                        CoHandler handler = request.handler;
+                        boolean failed = true;
+                        SocketChannel chan = null;
+                        try{
+                            final CoGroup coGroup = ioGroup.coGroup;
+                            chan = SocketChannel.open();
+                            coChan = new NioCoChannel(ioGroup.nextId(), ioGroup, chan);
+                            coGroup.channelInitializer().initialize(coChan, false);
+                            if(handler == null && (handler=coChan.handler()) == null){
+                                log.warn("{}: Channel handler not set, so close the channel");
+                                return;
+                            }
+                            coChan.handler(handler);
+                            log.debug("{}: connect to {}", ioGroup.name, request.remote);
+                            chan.configureBlocking(false);
+                            chan.register(ioGroup.selector, SelectionKey.OP_CONNECT, this);
+                            chan.connect(request.remote);
+                            step = STEP_CONN;
+                            failed = false;
+                        }catch(final Throwable cause){
+                            if(handler == null){
+                                log.warn(ioGroup.name+": Channel handler not set, uncaught exception", cause);
+                            }else{
+                                handler.uncaught(cause);
+                            }
+                            return;
+                        }finally {
+                            if(failed){
+                                step = STEP_COMP;
+                                IoUtils.close(chan);
+                            }
+                        }
+                        break;
+                    case STEP_CONN:
+                        try{
+                            if(coOwner == null){
+                                if(cause != null){
+                                    coChan.handler().uncaught(cause);
+                                }
+                                return;
+                            }
+                            coOwner.resume();
+                        }finally {
+                            step = STEP_COMP;
+                        }
+                        break;
+                    case STEP_COMP:
+                    default:
+                        log.warn("{}: connect has completed", ioGroup.name);
+                         break;
+                }
+            }
         }
 
         static class NioCoChannel extends CoChannel {
@@ -618,11 +797,9 @@ public class CoGroup {
     }// NioGroup
 
     static class AioGroup extends IoGroup {
-        final BlockingQueue<ResultHandler> cQueue = new LinkedTransferQueue<>();
-
         final AsynchronousServerSocketChannel serverChan;
         final AsynchronousChannelGroup chanGroup;
-        CoAcceptor coAcceptor = null;
+        AioCoAcceptor coAcceptor = null;
 
         public AioGroup(CoGroup coGroup, String name, AsynchronousServerSocketChannel serverChan,
                         AsynchronousChannelGroup chanGroup){
@@ -635,7 +812,7 @@ public class CoGroup {
         public void run() {
             try{
                 if(serverChan != null){
-                    coAcceptor = new CoAcceptor(this, serverChan);
+                    coAcceptor = new AioCoAcceptor(this, serverChan);
                     coAcceptor.start();
                     log.info("Started on {}:{}", coGroup.host, coGroup.port);
                 }else{
@@ -643,17 +820,17 @@ public class CoGroup {
                 }
 
                 for (;!coGroup.isStopped();){
-                    final ResultHandler handler = cQueue.poll(1L, TimeUnit.SECONDS);
+                    final CoTask handler = coQueue.poll(1L, TimeUnit.SECONDS);
                     if(handler != null){
-                        handler.handle();
+                        handler.run();
                     }
                     if(coGroup.isShutdown()){
                         for(;;){
-                            final ResultHandler h = cQueue.poll();
+                            final CoTask h = coQueue.poll();
                             if(h == null){
                                 break;
                             }
-                            h.handle();
+                            h.run();
                         }
                         break;
                     }
@@ -672,27 +849,23 @@ public class CoGroup {
                 coAcceptor.stop();
             }
             IoUtils.close(serverChan);
-            cQueue.clear();
             super.cleanup();
         }
 
         @Override
-        public void connect(final Continuation co, final CoChannel coOwner, final ConnectRequest request){
-            final ConnectHandler handler = new ConnectHandler(this, request);
+        public void connect(final Continuation co, final CoChannel coOwner,
+                            final ConnectRequest request) throws IOException {
+            final AioConnectHandler handler = new AioConnectHandler(this, request);
             handler.connect(co, coOwner);
         }
 
         @Override
         public void connect(final ConnectRequest request){
-            final ConnectHandler handler = new ConnectHandler(this, request);
+            final AioConnectHandler handler = new AioConnectHandler(this, request);
             handler.connect();
         }
 
-        public boolean offer(ResultHandler result){
-            return cQueue.offer(result);
-        }
-
-        static class ConnectHandler implements ResultHandler, CompletionHandler<Void, ConnectRequest> {
+        static class AioConnectHandler implements CoTask, CompletionHandler<Void, ConnectRequest> {
             CoChannel coOwner;
 
             final AioGroup aioGroup;
@@ -702,7 +875,7 @@ public class CoGroup {
             AsynchronousSocketChannel channel;
             Throwable cause;
 
-            public ConnectHandler(AioGroup aioGroup, ConnectRequest request){
+            public AioConnectHandler(AioGroup aioGroup, ConnectRequest request){
                 this.aioGroup= aioGroup;
                 this.request = request;
             }
@@ -729,15 +902,21 @@ public class CoGroup {
                 channel.connect(request.remote, request, this);
             }
 
-            public void connect(final Continuation co, final CoChannel coOwner){
+            public void connect(final Continuation co, final CoChannel coOwner) throws IOException {
                 connect();
                 log.debug("{}: wait for conn completion", aioGroup.name);
                 this.coOwner = coOwner;
                 co.suspend();
+                if(cause != null){
+                    if(cause instanceof IOException){
+                        throw (IOException)cause;
+                    }
+                    throw new IOException(cause);
+                }
             }
 
             @Override
-            public void handle() {
+            public void run() {
                 boolean failed = true;
                 log.debug("{}: Handle connection result", aioGroup.name);
                 try{
@@ -750,9 +929,11 @@ public class CoGroup {
                         return;
                     }
                     coChan.handler(handler);
-                    if(cause != null){
-                        handler.uncaught(cause);
-                        return;
+                    if(coOwner == null){
+                        if(cause != null){
+                            handler.uncaught(cause);
+                            return;
+                        }
                     }
                     log.debug("{}: start a new CoChannel {}", aioGroup.name, coChan.name);
                     coChan.resume();
@@ -770,7 +951,7 @@ public class CoGroup {
 
             @Override
             public void completed(Void none, ConnectRequest request) {
-                final ConnectHandler handler = new ConnectHandler(aioGroup, request);
+                final AioConnectHandler handler = new AioConnectHandler(aioGroup, request);
                 handler.channel = channel;
                 handler.coOwner = coOwner;
                 aioGroup.offer(handler);
@@ -778,16 +959,15 @@ public class CoGroup {
 
             @Override
             public void failed(Throwable cause, ConnectRequest request) {
-                final ConnectHandler handler = new ConnectHandler(aioGroup, request);
+                final AioConnectHandler handler = new AioConnectHandler(aioGroup, request);
                 handler.cause  = cause;
                 handler.coOwner= coOwner;
                 aioGroup.offer(handler);
             }
         }
 
-        // Accept coroutine.
-        static class CoAcceptor implements Coroutine {
-            final static Logger log = LoggerFactory.getLogger(CoAcceptor.class);
+        static class AioCoAcceptor implements Coroutine {
+            final static Logger log = LoggerFactory.getLogger(AioCoAcceptor.class);
 
             final String name = "aioAccept-co";
 
@@ -800,7 +980,7 @@ public class CoGroup {
 
             boolean stopped;
 
-            public CoAcceptor(final AioGroup aioGroup, AsynchronousServerSocketChannel chan){
+            public AioCoAcceptor(final AioGroup aioGroup, AsynchronousServerSocketChannel chan){
                 this.aioGroup = aioGroup;
                 this.coGroup  = aioGroup.coGroup;
                 this.chan = chan;
@@ -829,7 +1009,7 @@ public class CoGroup {
                 return resume();
             }
 
-            class AcceptResultHandler implements ResultHandler {
+            class AcceptResultHandler implements CoTask {
                 final AsynchronousSocketChannel chan;
                 final Throwable cause;
 
@@ -847,8 +1027,8 @@ public class CoGroup {
                 }
 
                 @Override
-                public void handle(){
-                    final CoAcceptor acceptor = CoAcceptor.this;
+                public void run(){
+                    final AioCoAcceptor acceptor = AioCoAcceptor.this;
                     if(cause != null){
                         acceptor.stop();
                         log.warn(name+" error", cause);
@@ -857,7 +1037,7 @@ public class CoGroup {
                     // Start a coroutine for handle socket channel
                     boolean failed = true;
                     try{
-                        final AioGroup aioGroup = CoAcceptor.this.aioGroup;
+                        final AioGroup aioGroup = acceptor.aioGroup;
                         final AioCoChannel coChan = new AioCoChannel(aioGroup, chan);
                         log.debug("{}: accept a new coChannel {}", name, coChan.name);
                         coGroup.channelInitializer().initialize(coChan, true);
@@ -877,15 +1057,15 @@ public class CoGroup {
                 }
             }
 
-            class AcceptHandler implements CompletionHandler<AsynchronousSocketChannel, CoAcceptor> {
+            class AcceptHandler implements CompletionHandler<AsynchronousSocketChannel, AioCoAcceptor> {
 
                 @Override
-                public void completed(AsynchronousSocketChannel result, CoAcceptor acceptor){
+                public void completed(AsynchronousSocketChannel result, AioCoAcceptor acceptor){
                     aioGroup.offer(new AcceptResultHandler(result));
                 }
 
                 @Override
-                public void failed(Throwable cause, CoAcceptor acceptor){
+                public void failed(Throwable cause, AioCoAcceptor acceptor){
                     aioGroup.offer(new AcceptResultHandler(cause));
                 }
 
@@ -928,12 +1108,16 @@ public class CoGroup {
                     return 0;
                 }
                 try{
-                    chan.write(src, null, handler);
-                    co.suspend();
-                    if(result.cause != null){
-                        throw new IOException(result.cause);
+                    int n = 0;
+                    for(;src.hasRemaining();){
+                        chan.write(src, null, handler);
+                        co.suspend();
+                        if(result.cause != null){
+                            throw new IOException(result.cause);
+                        }
+                        n += result.bytes;
                     }
-                    return result.bytes;
+                    return n;
                 } finally {
                     result = null;
                 }
@@ -964,7 +1148,7 @@ public class CoGroup {
                 }
             }// IoHandler
 
-            class IoResultHandler implements ResultHandler {
+            class IoResultHandler implements CoTask {
 
                 final Integer bytes;
                 final Throwable cause;
@@ -983,7 +1167,7 @@ public class CoGroup {
                 }
 
                 @Override
-                public void handle() {
+                public void run() {
                     result = this;
                     resume();
                 }
@@ -1015,6 +1199,10 @@ public class CoGroup {
 
     public int getBacklog(){
         return backlog;
+    }
+
+    public int getWorkerThreads(){
+        return workerThreads;
     }
 
     public final static Builder newBuilder(){
@@ -1058,6 +1246,11 @@ public class CoGroup {
             return this;
         }
 
+        public Builder setworkerThreads(int workerThreads){
+            group.workerThreads = workerThreads;
+            return this;
+        }
+
         public Builder channelInitializer(ChannelInitializer initializer){
             group.initializer = initializer;
             return this;
@@ -1067,6 +1260,20 @@ public class CoGroup {
             if(group.channelInitializer() == null){
                 throw new IllegalStateException("Channel initializer not set");
             }
+            final int workerThreads = group.getWorkerThreads();
+            if(workerThreads < 1){
+                throw new IllegalArgumentException("workerThreads smaller than 1: " + workerThreads);
+            }
+            group.workerThreadPool = Executors.newFixedThreadPool(workerThreads, new ThreadFactory() {
+                final AtomicInteger counter = new AtomicInteger(0);
+                @Override
+                public Thread newThread(Runnable r) {
+                    final String name = String.format("%s-worker-%d", group.getName(), counter.incrementAndGet());
+                    final Thread t = new Thread(r, name);
+                    t.setDaemon(group.isDaemon());
+                    return t;
+                }
+            });
             return group;
         }
 

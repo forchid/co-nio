@@ -3,10 +3,12 @@ package io.conio;
 import java.io.IOException;
 import java.io.Closeable;
 import java.nio.ByteBuffer;
+import java.util.concurrent.Callable;
 
 import com.offbynull.coroutines.user.Continuation;
 import com.offbynull.coroutines.user.Coroutine;
 import com.offbynull.coroutines.user.CoroutineRunner;
+import io.conio.util.CoFuture;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -32,6 +34,19 @@ public abstract class CoChannel implements Coroutine, Closeable {
         this.id = id;
         this.name = "chan-co-"+id;
         this.group = group;
+    }
+
+    /**
+     * <p>
+     * Execute the callable in channel worker thread pool.
+     * </p>
+     *
+     * @param callable
+     * @param <V>
+     * @return The callable future
+     */
+    public  <V> CoFuture<V> execute(final Callable<V> callable){
+        return group.execute(this, callable);
     }
 
     @Override
