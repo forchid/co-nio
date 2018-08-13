@@ -16,7 +16,8 @@ public class CoGroupTest {
                 .setName("serverCoGroup")
                 .channelInitializer((channel, sside) -> {
                     if(sside) {
-                        channel.handler(new EchoServerHandler());
+                        final PushCoChannel chan = (PushCoChannel)channel;
+                        chan.handler(new EchoServerHandler());
                     }
                 })
                 .build();
@@ -62,7 +63,8 @@ public class CoGroupTest {
                 .setName("serverCoGroup")
                 .channelInitializer((channel, sside) -> {
                     if(sside) {
-                        channel.handler(new EchoServerHandler());
+                        final PushCoChannel chan = (PushCoChannel)channel;
+                        chan.handler(new EchoServerHandler());
                     }
                 })
                 .build();
@@ -107,7 +109,8 @@ public class CoGroupTest {
                 .setName("serverCoGroup")
                 .channelInitializer((channel, sside) -> {
                     if(sside) {
-                        channel.handler(new EchoServerHandler());
+                        final PushCoChannel chan = (PushCoChannel)channel;
+                        chan.handler(new EchoServerHandler());
                     }
                 })
                 .build();

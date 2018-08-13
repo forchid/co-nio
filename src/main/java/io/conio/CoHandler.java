@@ -14,7 +14,7 @@ import org.slf4j.LoggerFactory;
 public interface CoHandler {
     Logger log = LoggerFactory.getLogger(CoHandler.class);
 
-    void handle(Continuation co, CoChannel channel);
+    void handle(Continuation co);
 
     default void uncaught(Throwable cause){
         log.warn("uncaught exception", cause);

@@ -27,7 +27,8 @@ public class FactorialClientHandler extends BaseTest implements CoHandler {
     }
 
     @Override
-    public void handle(Continuation co, CoChannel channel) {
+    public void handle(Continuation co) {
+        final CoChannel channel = (CoChannel)co.getContext();
         int i = 1;
         BigInteger result = null;
         try{

@@ -21,7 +21,8 @@ public class EchoServerHandler implements CoHandler {
     }
 
     @Override
-    public void handle(Continuation co, CoChannel channel) {
+    public void handle(Continuation co) {
+        final CoChannel channel = (CoChannel)co.getContext();
         try{
             for(;!channel.group().isShutdown();){
                 final int n = channel.read(co, buffer);

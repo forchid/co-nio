@@ -18,7 +18,8 @@ public class TaskExecutionTest {
                 .setName("serverCoGroup")
                 .channelInitializer((channel, sside) -> {
                     if(sside) {
-                        channel.handler(new FactorialServerHandler());
+                        final PushCoChannel chan = (PushCoChannel)channel;
+                        chan.handler(new FactorialServerHandler());
                     }
                 })
                 .build();
@@ -67,7 +68,8 @@ public class TaskExecutionTest {
                 .setName("serverCoGroup")
                 .channelInitializer((channel, sside) -> {
                     if(sside) {
-                        channel.handler(new FactorialServerHandler());
+                        final PushCoChannel chan = (PushCoChannel)channel;
+                        chan.handler(new FactorialServerHandler());
                     }
                 })
                 .build();

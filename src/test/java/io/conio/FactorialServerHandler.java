@@ -21,7 +21,8 @@ public class FactorialServerHandler implements CoHandler {
     }
 
     @Override
-    public void handle(Continuation co, CoChannel channel) {
+    public void handle(Continuation co) {
+        final CoChannel channel = (CoChannel)co.getContext();
         try{
             final CoGroup group = channel.group();
             for(;!group.isShutdown();){
