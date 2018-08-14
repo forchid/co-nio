@@ -16,6 +16,10 @@ version '0.0.1'
 
 sourceCompatibility = 1.8
 
+coroutines {
+    //debugMode = true
+}
+
 repositories {
     mavenCentral()
 }
