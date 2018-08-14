@@ -34,7 +34,7 @@ public class FactorialClientHandler extends BaseTest implements CoHandler {
         try{
             final CoGroup group = channel.group();
             for(;!group.isShutdown(); ++i){
-                result = calc(co, channel, i);
+                result = calc(co, channel, 1, i);
                 final BigInteger expect;
                 if(i <= FACTORS.length && result.compareTo(FACTORS[i - 1]) != 0){
                     log.warn("Result error: {} expect {}", result, FACTORS[i - 1]);
@@ -50,14 +50,15 @@ public class FactorialClientHandler extends BaseTest implements CoHandler {
         }
     }
 
-    private BigInteger calc(Continuation co, CoChannel channel, final int n)throws IOException {
+    private BigInteger calc(Continuation co, CoChannel channel, final int from, final int to)throws IOException {
         buffer.clear();
-        // Send: N(4)
-        buffer.putInt(n);
+        // Send: From(4), To(4)
+        buffer.putInt(from);
+        buffer.putInt(to);
         buffer.flip();
         channel.write(co, buffer);
         buffer.clear();
-        bytes += 4;
+        bytes += 8;
 
         // Receive: LEN(4), status, result
         for(;buffer.position() < 4;){
@@ -83,7 +84,7 @@ public class FactorialClientHandler extends BaseTest implements CoHandler {
             }
         }
         buf.flip();
-        bytes += (n + 5);
+        bytes += len;
 
         final int status = buf.get() & 0xff;
         final byte[] a = buf.array();

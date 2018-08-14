@@ -31,8 +31,8 @@ public class FactorialServerHandler implements CoHandler {
                     break;
                 }
             }
-        }catch (final IOException cause){
-            log.warn("IO error", cause);
+        }catch (final Throwable cause){
+            log.warn("Calc error", cause);
         }finally {
             IoUtils.close(channel);
         }
@@ -41,28 +41,29 @@ public class FactorialServerHandler implements CoHandler {
     private boolean calc(Continuation co, CoChannel channel)throws IOException {
         buffer.clear();
 
-        // Receive: N(4)
-        for(;buffer.position() < 4;){
+        // Receive: From(4), To(4)
+        for(;buffer.position() < 8;){
             final int i = channel.read(co, buffer);
             if(i == -1){
                 return true;
             }
         }
         buffer.flip();
-        final int n = buffer.getInt();
+        final int from = buffer.getInt();
+        final int to   = buffer.getInt();
         buffer.clear();
 
         ByteBuffer result;
         byte status = 0x0;
-        if(n < 1){
-            final String error = String.format("%d out of range", n);
+        if(from < 1 || to < 1 || from > to){
+            final String error = String.format("[%d, %d] out of range", from, to);
             result = ByteBuffer.wrap(error.getBytes(encoding));
             status = 0x1;
         }else{
             // execute computation task in worker thread instead of in coroutine!
             final CoFuture<BigInteger> f = channel.execute(() -> {
-                BigInteger factor = BigInteger.ONE;
-                for(int i = 2; i <= n; ++i){
+                BigInteger factor = new BigInteger(from+"");
+                for(int i = from + 1; i <= to; ++i){
                     factor = factor.multiply(new BigInteger(i+""));
                 }
                 return factor;
