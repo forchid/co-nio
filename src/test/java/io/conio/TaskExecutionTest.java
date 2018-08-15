@@ -54,18 +54,15 @@ public class TaskExecutionTest {
         clientGroup.shutdown();
         clientGroup.await();
         final long sec = (System.currentTimeMillis() - ts) / 1000L;
-        long bytes = 0L, times = 0L, maxlen = 0;
+        long bytes = 0L, times = 0L;
         for(final FactorialClientHandler handler: handlers){
             bytes += handler.bytes;
             times += handler.times;
-            if(maxlen < handler.maxlen){
-                maxlen = handler.maxlen;
-            }
         }
         if(sec == 0L){
-            log.info("bytes: {}m, times: {}, maxlen: {}", bytes>>20, times, maxlen);
+            log.info("bytes: {}m, times: {}", bytes>>20, times);
         }else{
-            log.info("bytes: {}m, tps: {}, maxlen: {}", bytes>>20, times/sec, maxlen);
+            log.info("bytes: {}m, tps: {}", bytes>>20, times/sec);
         }
 
         serverGroup.shutdown();

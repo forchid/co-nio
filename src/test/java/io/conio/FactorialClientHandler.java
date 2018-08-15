@@ -3,7 +3,6 @@ package io.conio;
 import com.offbynull.coroutines.user.Continuation;
 import io.conio.util.IoUtils;
 
-import java.io.EOFException;
 import java.io.IOException;
 import java.math.BigInteger;
 import java.nio.ByteBuffer;
@@ -18,9 +17,6 @@ public class FactorialClientHandler extends BaseTest implements CoHandler {
     };
 
     protected final ByteBuffer buffer = ByteBuffer.allocate(8192);
-    protected final String encoding = "ascii";
-
-    int maxlen = 0;
 
     public FactorialClientHandler(){
 
@@ -30,12 +26,10 @@ public class FactorialClientHandler extends BaseTest implements CoHandler {
     public void handle(Continuation co) {
         final CoChannel channel = (CoChannel)co.getContext();
         int i = 1;
-        BigInteger result = null;
         try{
             final CoGroup group = channel.group();
             for(;!group.isShutdown(); ++i){
-                result = calc(co, channel, 1, i);
-                final BigInteger expect;
+                BigInteger result = calc(co, 1, i);
                 if(i <= FACTORS.length && result.compareTo(FACTORS[i - 1]) != 0){
                     log.warn("Result error: {} expect {}", result, FACTORS[i - 1]);
                     break;
@@ -45,57 +39,17 @@ public class FactorialClientHandler extends BaseTest implements CoHandler {
         }catch (final IOException cause){
             log.warn("IO error", cause);
         }finally {
-            //log.info("{}!: max-length = {}", i, maxlen);
             IoUtils.close(channel);
         }
     }
 
-    private BigInteger calc(Continuation co, CoChannel channel, final int from, final int to)throws IOException {
-        buffer.clear();
-        // Send: From(4), To(4)
-        buffer.putInt(from);
-        buffer.putInt(to);
-        buffer.flip();
-        channel.write(co, buffer);
-        buffer.clear();
-        bytes += 8;
+    private BigInteger calc(Continuation co, final int from, final int to)throws IOException {
+        final FactorialRequest request = new FactorialRequest(from, to);
+        bytes += FactorialCodec.encodeRequest(co, buffer, request);
 
-        // Receive: LEN(4), status, result
-        for(;buffer.position() < 4;){
-            final int i = channel.read(co, buffer);
-            if(i == -1){
-                throw new EOFException();
-            }
-        }
-        buffer.flip();
-        final int len = buffer.getInt();
-
-        ByteBuffer buf = buffer.compact();
-        for(;buf.position() < len;){
-            final int i = channel.read(co, buf);
-            if(i == -1){
-                throw new EOFException();
-            }
-            if(buf.remaining() == 0){
-                ByteBuffer b = ByteBuffer.allocate(buf.capacity()<<1);
-                buf.flip();
-                b.put(buf);
-                buf = b;
-            }
-        }
-        buf.flip();
-        bytes += len;
-
-        final int status = buf.get() & 0xff;
-        final byte[] a = buf.array();
-        final String result = new String(a, 1, buf.limit()-1, encoding);
-        if(status != 0){
-            throw new IOException(result);
-        }
-        if(maxlen < result.length()){
-            maxlen = result.length();
-        }
-        return new BigInteger(result);
+        final FactorialResponse response = FactorialCodec.decodeResponse(co, buffer);
+        bytes += response.size;
+        return response.factor;
     }
 
 }
