@@ -55,28 +55,40 @@ public class FactorialServerHandler implements CoHandler {
 
         ByteBuffer result;
         byte status = 0x0;
-        if(from < 1 || to < 1 || from > to){
-            final String error = String.format("[%d, %d] out of range", from, to);
-            result = ByteBuffer.wrap(error.getBytes(encoding));
-            status = 0x1;
-        }else{
+        // *ClassCastException thrown when processing logic enters the "if" statement, instrumentation bug?*
+        //if(from < 1 || to < 1 || from > to){
+        //    final String error = String.format("[%d, %d] out of range", from, to);
+        //    result = ByteBuffer.wrap(error.getBytes(encoding));
+        //    status = 0x1;
+        //}else{
             // execute computation task in worker thread instead of in coroutine!
-            final CoFuture<BigInteger> f = channel.execute(() -> {
+            final CoFuture<FactorialResult> f = channel.execute(() -> {
+                if(from < 1 || to < 1 || from > to){
+                    final String error = String.format("[%d, %d] out of range", from, to);
+                    return new FactorialResult(error);
+                }
                 BigInteger factor = new BigInteger(from+"");
                 for(int i = from + 1; i <= to; ++i){
                     factor = factor.multiply(new BigInteger(i+""));
                 }
-                return factor;
+                return new FactorialResult(factor);
             });
             try {
-                final BigInteger factor = f.get(co);
-                result = ByteBuffer.wrap(factor.toString().getBytes(encoding));
+                final FactorialResult res = f.get(co);
+                if(res.error == null){
+                    final BigInteger factor = res.factor;
+                    result = ByteBuffer.wrap(factor.toString().getBytes(encoding));
+                }else {
+                    final String error = res.error;
+                    result = ByteBuffer.wrap(error.getBytes(encoding));
+                    status = 0x01;
+                }
             }catch(final ExecutionException e){
                 final String error = e.getCause().getMessage();
                 result = ByteBuffer.wrap(error.getBytes(encoding));
                 status = 0x1;
             }
-        }
+        //}
 
         // Send: LEN(4), status, result
         buffer.putInt(result.capacity() + 1);
@@ -85,6 +97,25 @@ public class FactorialServerHandler implements CoHandler {
         channel.write(co, buffer);
         channel.write(co, result);
         return false;
+    }
+
+    static class FactorialResult {
+        public final BigInteger factor;
+        public final String error;
+
+        public FactorialResult(BigInteger factor){
+            this(factor, null);
+        }
+
+        public FactorialResult(String error){
+            this(null, error);
+        }
+
+        protected FactorialResult(BigInteger factor, String error){
+            this.factor = factor;
+            this.error  = error;
+        }
+
     }
 
 }
