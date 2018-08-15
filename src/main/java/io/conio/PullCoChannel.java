@@ -36,7 +36,7 @@ public abstract class PullCoChannel extends CoChannel {
      * @return the callable future
      */
     public <V> CoFuture<V> execute(final CoCallable<V> coCallable){
-        final CoFutureTask<V> f = new CoFutureTask(coCallable);
+        final CoFutureTask<V> f = new CoFutureTask<>(coCallable);
         coQueue.offer(f);
         if(isIdle()){
             resume();
@@ -114,6 +114,7 @@ public abstract class PullCoChannel extends CoChannel {
             return done;
         }
 
+        @SuppressWarnings("unchecked")
         void setValue(Object value){
             this.value = (V)value;
             setDone();

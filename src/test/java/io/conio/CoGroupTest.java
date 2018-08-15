@@ -70,4 +70,11 @@ public class CoGroupTest {
         serverGroup.await();
     }
 
+    public static void main(String args[]){
+        final CoGroupTest test = new CoGroupTest();
+        test.testAioConnect();
+        test.testNioConnect();
+        test.testLongConnect();
+    }
+
 }

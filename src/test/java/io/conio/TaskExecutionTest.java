@@ -72,4 +72,10 @@ public class TaskExecutionTest {
         serverGroup.await();
     }
 
+    public static void main(String args[]){
+        final TaskExecutionTest test = new TaskExecutionTest();
+        test.testNioTaskExecution();
+        test.testAioTaskExecution();
+    }
+
 }

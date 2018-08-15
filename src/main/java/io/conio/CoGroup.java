@@ -168,11 +168,11 @@ public class CoGroup {
         return new NioGroup(this, name, serverChan, selector);
     }
 
-    protected IoGroup bootAio(String name){
+    protected IoGroup bootAio(final String name){
         boolean failed;
 
         final ExecutorService ioExec = Executors.newFixedThreadPool(1, (r) -> {
-            final Thread t = new Thread(r, "aio-exec");
+            final Thread t = new Thread(r, name+"-exec");
             t.setDaemon(isDaemon());
             return t;
         });
@@ -210,7 +210,7 @@ public class CoGroup {
             }
         }
 
-        return new AioGroup(this, name, serverChan, chanGroup);
+        return new AioGroup(this, name, serverChan, ioExec, chanGroup);
     }
 
     static abstract class IoGroup implements Runnable {
@@ -271,7 +271,7 @@ public class CoGroup {
             coGroup.ioGroup = null;
             coQueue.clear();
             coGroup.workerThreadPool.shutdown();
-            log.info("Stopped");
+            log.info("{}: Stopped",  name);
         }
 
     }// IoGroup
@@ -386,9 +386,9 @@ public class CoGroup {
         public void run(){
             try{
                 if(coGroup.host != null){
-                    log.info("Started on {}:{}", coGroup.host, coGroup.port);
+                    log.info("{}: Started on {}:{}", name, coGroup.host, coGroup.port);
                 }else{
-                    log.info("Started");
+                    log.info("{}: Started",  name);
                 }
 
                 for(;!coGroup.isStopped();){
@@ -894,14 +894,30 @@ public class CoGroup {
         final static Logger log = LoggerFactory.getLogger(AioGroup.class);
 
         final AsynchronousServerSocketChannel serverChan;
+        final ExecutorService ioExec;
         final AsynchronousChannelGroup chanGroup;
         AioCoAcceptor coAcceptor = null;
 
+        private int ioOps;
+
         public AioGroup(CoGroup coGroup, String name, AsynchronousServerSocketChannel serverChan,
-                        AsynchronousChannelGroup chanGroup){
+                        ExecutorService ioExec, AsynchronousChannelGroup chanGroup){
             super(coGroup, name);
             this.serverChan = serverChan;
+            this.ioExec     = ioExec;
             this.chanGroup  = chanGroup;
+        }
+
+        final int ioOps(){
+            return ioOps;
+        }
+
+        final int incIoOps(){
+            return ++ioOps;
+        }
+
+        final int decIoOps(){
+            return --ioOps;
         }
 
         @Override
@@ -910,17 +926,18 @@ public class CoGroup {
                 if(serverChan != null){
                     coAcceptor = new AioCoAcceptor(this, serverChan);
                     coAcceptor.start();
-                    log.info("Started on {}:{}", coGroup.host, coGroup.port);
+                    log.info("{}: Started on {}:{}",  name, coGroup.host, coGroup.port);
                 }else{
-                    log.info("Started");
+                    log.info("{}: Started",  name);
                 }
 
                 for (;!coGroup.isStopped();){
-                    final CoTask handler = coQueue.poll(1L, TimeUnit.SECONDS);
+                    final CoTask handler = coQueue.poll(1000L, TimeUnit.MILLISECONDS);
                     if(handler != null){
                         handler.run();
                     }
                     if(coGroup.isShutdown()){
+                        stopAcceptor();
                         for(;;){
                             final CoTask h = coQueue.poll();
                             if(h == null){
@@ -928,7 +945,9 @@ public class CoGroup {
                             }
                             h.run();
                         }
-                        break;
+                        if(ioOps() == 0){
+                            break;
+                        }
                     }
                 } // poll-loop
 
@@ -941,11 +960,27 @@ public class CoGroup {
 
         @Override
         protected void cleanup(){
+            stopAcceptor();
+            // wait for the channel group
+            sleep(50L);
+            chanGroup.shutdown();
+            ioExec.shutdown();
+            super.cleanup();
+        }
+
+        final static void sleep(final long millis){
+            try {
+                Thread.sleep(100L);
+            }catch(final InterruptedException e){
+                // ignore
+            }
+        }
+
+        final void stopAcceptor(){
             if(coAcceptor != null){
                 coAcceptor.stop();
+                coAcceptor = null;
             }
-            IoUtils.close(serverChan);
-            super.cleanup();
         }
 
         @Override
@@ -994,15 +1029,27 @@ public class CoGroup {
                 openChannel();
                 log.debug("{}: connect to {}", aioGroup.name, request.remote);
                 channel.connect(request.remote, request, this);
+                aioGroup.incIoOps();
             }
 
             public CoFuture<PullCoChannel> connect(final CoChannel source) {
-                connect();
-                return (future = new CoFutureImpl<>(source));
+                boolean failed = true;
+                try{
+                    connect();
+                    future = new CoFutureImpl<>(source);
+                    failed = false;
+                    return future;
+                }finally {
+                    if(failed){
+                        aioGroup.decIoOps();
+                    }
+                }
             }
 
             @Override
             public void run() {
+                aioGroup.decIoOps();
+
                 final boolean pull = (future != null);
                 boolean failed = true;
                 log.debug("{}: Handle connection result", aioGroup.name);
@@ -1098,12 +1145,16 @@ public class CoGroup {
 
             @Override
             public void run(Continuation co){
-                log.info("{}: started", name);
-                for (;!coGroup.isShutdown() && !stopped;){
-                    chan.accept(this, handler);
-                    co.suspend();
+                try{
+                    log.info("{}: started", name);
+                    for (;!coGroup.isShutdown() && !stopped;){
+                        chan.accept(this, handler);
+                        co.suspend();
+                    }
+                }finally {
+                    IoUtils.close(chan);
+                    log.info("{}: stopped", name);
                 }
-                log.info("{}: stopped", name);
             }
 
             public boolean resume(){
@@ -1115,6 +1166,9 @@ public class CoGroup {
             }
 
             public boolean stop(){
+                if(stopped){
+                    return true;
+                }
                 stopped = true;
                 return resume();
             }
@@ -1140,6 +1194,10 @@ public class CoGroup {
                 public void run(){
                     final AioCoAcceptor acceptor = AioCoAcceptor.this;
                     if(cause != null){
+                        if(acceptor.stopped && (cause instanceof AsynchronousCloseException)){
+                            log.debug("{}: Closed", name);
+                            return;
+                        }
                         acceptor.stop();
                         log.warn(name+" error", cause);
                         return;
@@ -1265,15 +1323,23 @@ public class CoGroup {
                 if(!dst.hasRemaining()){
                     return 0;
                 }
+                boolean failed = false;
                 try{
                     chan.read(dst, null, handler);
+                    aioGroup.incIoOps();
+                    failed = true;
                     co.suspend();
+                    failed = false;
+                    aioGroup.decIoOps();
                     if(result.cause != null){
                         throw new IOException(result.cause);
                     }
                     return result.bytes;
                 } finally {
                     result = null;
+                    if(failed){
+                        aioGroup.decIoOps();
+                    }
                 }
             }
 
@@ -1282,11 +1348,16 @@ public class CoGroup {
                 if(!src.hasRemaining()){
                     return 0;
                 }
+                boolean failed = false;
                 try{
                     int n = 0;
                     for(;src.hasRemaining();){
                         chan.write(src, null, handler);
+                        aioGroup.incIoOps();
+                        failed = true;
                         co.suspend();
+                        failed = false;
+                        aioGroup.decIoOps();
                         if(result.cause != null){
                             throw new IOException(result.cause);
                         }
@@ -1295,6 +1366,9 @@ public class CoGroup {
                     return n;
                 } finally {
                     result = null;
+                    if(failed){
+                        aioGroup.decIoOps();
+                    }
                 }
             }
 
