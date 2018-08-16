@@ -8,6 +8,7 @@ import java.io.IOException;
 import java.math.BigInteger;
 import java.net.InetSocketAddress;
 import java.nio.ByteBuffer;
+import java.util.*;
 import java.util.concurrent.ExecutionException;
 
 public class FactorialProxyHandler extends FactorialServerHandler {
@@ -26,15 +27,15 @@ public class FactorialProxyHandler extends FactorialServerHandler {
 
         // 1. connect
         if(backendChans == null){
-            final CoFuture<PullCoChannel> cfutures[] = new CoFuture[backends.length];
+            final List<CoFuture<PullCoChannel>> cfutures = new ArrayList<>(backends.length);
             for(int i = 0; i < backends.length; ++i){
                 final InetSocketAddress backend = backends[i];
-                cfutures[i] = group.connect(channel, backend);
+                cfutures.add(group.connect(channel, backend));
             }
             backendChans = new PullCoChannel[backends.length];
-            for(int i = 0; i < cfutures.length; ++i){
+            for(int i = 0; i < cfutures.size(); ++i){
                 try {
-                    final CoFuture<PullCoChannel> cf = cfutures[i];
+                    final CoFuture<PullCoChannel> cf = cfutures.get(i);
                     backendChans[i] = cf.get(co);
                 }catch(final ExecutionException e){
                     release(backendChans);
@@ -44,7 +45,7 @@ public class FactorialProxyHandler extends FactorialServerHandler {
         }
 
         // 2. calculate
-        final CoFuture<FactorialResponse> rfutures[] = new CoFuture[backendChans.length];
+        final List<CoFuture<FactorialResponse>> rfutures = new ArrayList<>(backendChans.length);
         final int range = request.to - request.from + 1;
         final int sizePerShard = range / backends.length;
         for(int from = request.from, i = 0; from <= request.to; from += sizePerShard, ++i){
@@ -57,7 +58,7 @@ public class FactorialProxyHandler extends FactorialServerHandler {
                 to = sizePerShard;
             }
             final FactorialRequest req = new FactorialRequest(from, to);
-            rfutures[i] = chan.execute((c) -> {
+            final CoFuture<FactorialResponse> cf = chan.execute((c) -> {
                 try{
                     final ByteBuffer buf = ByteBuffer.allocate(1024);
                     FactorialCodec.encodeRequest(c, buf, req);
@@ -66,11 +67,12 @@ public class FactorialProxyHandler extends FactorialServerHandler {
                     throw new RuntimeException(e);
                 }
             });
+            rfutures.add(cf);
         }
-        final FactorialResponse responses[] = new FactorialResponse[rfutures.length];
+        final FactorialResponse responses[] = new FactorialResponse[rfutures.size()];
         for(int i = 0; i < responses.length; ++i){
             try{
-                responses[i] = rfutures[i].get(co);
+                responses[i] = rfutures.get(i).get(co);
             }catch(final Throwable cause){
                 release(backendChans);
                 String error = cause.getMessage();
