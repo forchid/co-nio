@@ -8,7 +8,6 @@ import java.math.BigInteger;
 import java.nio.ByteBuffer;
 
 public class FactorialClientHandler extends BaseTest implements CoHandler {
-
     final static BigInteger [] FACTORS = {
             new BigInteger("1"), new BigInteger("2"), new BigInteger("6"),
             new BigInteger("24"), new BigInteger("120"), new BigInteger("720"),

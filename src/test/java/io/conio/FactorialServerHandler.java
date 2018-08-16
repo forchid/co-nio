@@ -8,13 +8,10 @@ import java.io.EOFException;
 import java.io.IOException;
 import java.math.BigInteger;
 import java.nio.ByteBuffer;
-import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutionException;
 
 public class FactorialServerHandler implements CoHandler {
-
     protected final ByteBuffer buffer = ByteBuffer.allocate(8192);
-    protected final String encoding = "ascii";
 
     public FactorialServerHandler(){
 
@@ -26,7 +23,7 @@ public class FactorialServerHandler implements CoHandler {
         try{
             final CoGroup group = channel.group();
             for(;!group.isShutdown();){
-                final boolean exit = calc(co, channel);
+                final boolean exit = calc(co);
                 if(exit){
                     break;
                 }
@@ -38,7 +35,7 @@ public class FactorialServerHandler implements CoHandler {
         }
     }
 
-    private boolean calc(Continuation co, CoChannel channel)throws IOException {
+    protected boolean calc(Continuation co)throws IOException {
         final FactorialRequest request;
         try {
             request = FactorialCodec.decodeRequest(co, buffer);
@@ -46,7 +43,7 @@ public class FactorialServerHandler implements CoHandler {
             return true;
         }
 
-        FactorialResponse response = null;
+        final FactorialResponse response;
         // *ClassCastException thrown when processing enters the "if" statement and using "else", instrumentation bug?*
         if(request.from < 1 || request.to < 1 || request.from > request.to){
             final String error = String.format("[%d, %d] out of range", request.from, request.to);
@@ -54,6 +51,14 @@ public class FactorialServerHandler implements CoHandler {
             FactorialCodec.encodeResponse(co, buffer, response);
             return false;
         }
+
+        response = doCalc(co, request);
+        FactorialCodec.encodeResponse(co, buffer, response);
+        return false;
+    }
+
+    protected FactorialResponse doCalc(Continuation co, final FactorialRequest request){
+        final CoChannel channel = (CoChannel)co.getContext();
 
         // execute computation task in worker thread instead of in coroutine!
         final CoFuture<FactorialResponse> f = channel.execute(() -> {
@@ -70,12 +75,10 @@ public class FactorialServerHandler implements CoHandler {
         });
 
         try {
-            response = f.get(co);
+            return f.get(co);
         }catch(final ExecutionException e){
-            response = new FactorialResponse(e.getCause().getMessage());
+            return new FactorialResponse(e.getCause().getMessage());
         }
-        FactorialCodec.encodeResponse(co, buffer, response);
-        return false;
     }
 
 }

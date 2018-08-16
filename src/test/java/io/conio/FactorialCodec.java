@@ -19,7 +19,7 @@ public class FactorialCodec {
        for(;buffer.position() < 8;){
            final int i = channel.read(co, buffer);
            if(i == -1){
-               throw new EOFException();
+               throw new EOFException("Peer closed");
            }
        }
        buffer.flip();
@@ -52,7 +52,7 @@ public class FactorialCodec {
        for(;buffer.position() < 4;){
            final int i = channel.read(co, buffer);
            if(i == -1){
-               throw new EOFException();
+               throw new EOFException("Peer closed");
            }
        }
        buffer.flip();
