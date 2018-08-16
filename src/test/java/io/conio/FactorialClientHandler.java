@@ -49,6 +49,9 @@ public class FactorialClientHandler extends BaseTest implements CoHandler {
 
         final FactorialResponse response = FactorialCodec.decodeResponse(co, buffer);
         bytes += response.size;
+        if(response.error != null){
+            throw new IOException(response.error);
+        }
         return response.factor;
     }
 

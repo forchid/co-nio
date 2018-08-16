@@ -67,8 +67,14 @@ public class CoGroup {
     }
 
     public void shutdown(){
+        if(isShutdown()){
+            return;
+        }
+        final IoGroup group = ioGroup;
         shutdown = true;
-        ioGroup.shutdown();
+        if(group != null){
+            group.shutdown();
+        }
     }
 
     public final boolean isShutdown(){
@@ -76,6 +82,9 @@ public class CoGroup {
     }
 
     public void await(){
+        if(isStopped()){
+            return;
+        }
         final IoGroup group = ioGroup;
         if(group == null){
             return;
@@ -295,25 +304,18 @@ public class CoGroup {
         if(group != this){
             throw new IllegalArgumentException("CoChannel group not this group");
         }
-        final CompletableFuture<V> f = CompletableFuture.supplyAsync(()->{
-            try {
-                return callable.call();
-            }catch(final Exception e){
-                if(e instanceof RuntimeException){
-                    throw (RuntimeException)e;
-                }
-                throw new RuntimeException(e);
-            }
-        }, group.workerThreadPool);
+
+        final ExecutorService exec = group.workerThreadPool;
         final CoFutureImpl<V> cf = new CoFutureImpl<>(chan);
-        f.handle((v, e) ->{
-            if(e != null){
-                cf.setCause(e);
-            }else{
+        exec.execute(() -> {
+            try {
+                final V v = callable.call();
                 cf.setValue(v);
+            }catch (final Throwable e){
+                cf.setCause(e);
+            }finally {
+                group.offer(cf);
             }
-            offer(cf);
-            return v;
         });
         return cf;
     }// execute()
@@ -368,6 +370,7 @@ public class CoGroup {
                 chan.resume();
             }
         }
+
     }// CoFutureImpl
 
     static class NioGroup extends  IoGroup {

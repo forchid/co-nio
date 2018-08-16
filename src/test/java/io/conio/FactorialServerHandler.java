@@ -46,33 +46,34 @@ public class FactorialServerHandler implements CoHandler {
             return true;
         }
 
-        // *ClassCastException thrown when processing logic enters the "if" statement, instrumentation bug?*
-        //if(from < 1 || to < 1 || from > to){
-        //    final String error = String.format("[%d, %d] out of range", from, to);
-        //    result = ByteBuffer.wrap(error.getBytes(encoding));
-        //    status = 0x1;
-        //}else{
-            // execute computation task in worker thread instead of in coroutine!
-            final CoFuture<FactorialResponse> f = channel.execute(() -> {
-                if(request.from < 1 || request.to < 1 || request.from > request.to){
-                    final String error = String.format("[%d, %d] out of range", request.from, request.to);
-                    return new FactorialResponse(error);
-                }
-                BigInteger factor = new BigInteger(request.from+"");
-                for(int i = request.from + 1; i <= request.to; ++i){
-                    factor = factor.multiply(new BigInteger(i+""));
-                }
-                return new FactorialResponse(factor);
-            });
+        FactorialResponse response = null;
+        // *ClassCastException thrown when processing enters the "if" statement and using "else", instrumentation bug?*
+        if(request.from < 1 || request.to < 1 || request.from > request.to){
+            final String error = String.format("[%d, %d] out of range", request.from, request.to);
+            response = new FactorialResponse(error);
+            FactorialCodec.encodeResponse(co, buffer, response);
+            return false;
+        }
 
-            FactorialResponse response = null;
-            try {
-                response = f.get(co);
-            }catch(final ExecutionException e){
-                response = new FactorialResponse(e.getCause().getMessage());
+        // execute computation task in worker thread instead of in coroutine!
+        final CoFuture<FactorialResponse> f = channel.execute(() -> {
+            // Reserved test for instrumentation bug
+            if(request.from < 1 || request.to < 1 || request.from > request.to){
+                final String error = String.format("[%d, %d] out of range", request.from, request.to);
+                return new FactorialResponse(error);
             }
-        //}
+            BigInteger factor = new BigInteger(request.from+"");
+            for(int i = request.from + 1; i <= request.to; ++i){
+                factor = factor.multiply(new BigInteger(i+""));
+            }
+            return new FactorialResponse(factor);
+        });
 
+        try {
+            response = f.get(co);
+        }catch(final ExecutionException e){
+            response = new FactorialResponse(e.getCause().getMessage());
+        }
         FactorialCodec.encodeResponse(co, buffer, response);
         return false;
     }
