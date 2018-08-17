@@ -66,7 +66,8 @@ public class CoProxyTest {
                 .setName("clientGroup")
                 .build();
         clientGroup.start();
-        final int clients = 1;
+        final long ts = System.currentTimeMillis();
+        final int clients = 128;
         final FactorialClientHandler clientHandlers[] = new FactorialClientHandler[clients];
         for(int i = 0; i < clients; ++i){
             final FactorialClientHandler handler = new FactorialClientHandler();
@@ -74,8 +75,19 @@ public class CoProxyTest {
             clientHandlers[i] = handler;
         }
 
-        log.info("Test process");
-        BaseTest.sleep(30000L);
+        log.info("Test bootstrap");
+        BaseTest.sleep(60000L);
+        final long sec = (System.currentTimeMillis() - ts) / 1000L;
+        long bytes = 0L, times = 0L;
+        for(final FactorialClientHandler handler: clientHandlers){
+            bytes += handler.bytes;
+            times += handler.times;
+        }
+        if(sec == 0L){
+            log.info("bytes: {}m, times: {}", bytes>>20, times);
+        }else{
+            log.info("bytes: {}m, tps: {}", bytes>>20, times/sec);
+        }
 
         log.info("Test shutdown");
         clientGroup.shutdown();

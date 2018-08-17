@@ -8,7 +8,7 @@ public class TaskExecutionTest {
     final static Logger log = LoggerFactory.getLogger(TaskExecutionTest.class);
 
     final static String HOST = "localhost";
-    final static int maxConns = 100;
+    final static int maxConns = 128;
 
     @Test
     public void testNioTaskExecution(){

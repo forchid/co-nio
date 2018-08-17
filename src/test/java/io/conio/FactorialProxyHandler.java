@@ -51,57 +51,60 @@ public class FactorialProxyHandler extends FactorialServerHandler {
 
         // 2. calculate
         final int range = request.to - request.from + 1;
-        int sizePerShard = range / backends.length;
-        if(sizePerShard == 0){
-            sizePerShard = 1;
-        }
-        final int shards = range / sizePerShard;
-        System.out.println("Request: "+ request +", Shards: " + shards);
+        final int sizePerShard = range / backends.length;
+        final int shards = (range >= backends.length ? backends.length: range % backends.length);
+        log.debug("request: {}, shards: {}, sizePerShard: {}", request, shards, sizePerShard);
         final List<CoFuture<FactorialResponse>> rfutures = new ArrayList<>(shards);
         for(int from = request.from, i = 0; from <= request.to; ++i){
             final PullCoChannel chan = backendChans[i];
-            final int a = from, to;
+            final int start = from, to;
             if(i == shards - 1){
                 final int rem = range % backends.length;
-                to = sizePerShard + rem;
+                to = from + sizePerShard + rem - 1;
                 from += sizePerShard + rem;
             }else {
-                to = sizePerShard;
+                to = from + sizePerShard - 1;
                 from += sizePerShard;
             }
+            final FactorialRequest req = new FactorialRequest(start, to);
+            log.debug("Send to backend: request {}", req);
             final CoFuture<FactorialResponse> cf = chan.execute((c) -> {
                 try{
-                    final ByteBuffer buf = ByteBuffer.allocate(1024);
-                    final FactorialRequest req = new FactorialRequest(a, to);
+                    final ByteBuffer buf = ByteBuffer.allocate(64);
                     FactorialCodec.encodeRequest(c, buf, req);
                     return FactorialCodec.decodeResponse(c, buf);
                 }catch (final IOException e){
-                    e.printStackTrace();
                     throw new RuntimeException(e);
                 }
             });
             rfutures.add(cf);
         }
-        final FactorialResponse responses[] = new FactorialResponse[shards];
-        for(int i = 0; i < shards; ++i){
+        final FactorialResponse responses[] = new FactorialResponse[rfutures.size()];
+        for(int i = 0; i < responses.length; ++i){
             try{
                 responses[i] = rfutures.get(i).get(co);
             }catch(final Throwable cause){
                 log.warn("Calc error", cause);
                 release(backendChans);
-                String error = cause.getMessage();
+                final String error = cause.getMessage();
                 return new FactorialResponse(error);
             }
         }
 
         // 3. merge
         BigInteger factor = responses[0].factor;
-        System.out.println(String.format("f%d: %s", 0, factor));
+        log.debug("factor{} <- {}", 0, factor);
         for(int i = 1; i < responses.length; ++i){
             factor = factor.multiply(responses[i].factor);
-            System.out.println(String.format("f%d: %s", i, factor));
+            log.debug("factor{} <- {}", i, factor);
         }
         return new FactorialResponse(factor);
+    }
+
+    @Override
+    protected void cleanup(final CoChannel channel){
+        super.cleanup(channel);
+        release(backendChans);
     }
 
     private void release(final PullCoChannel[] channels){

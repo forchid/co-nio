@@ -34,8 +34,12 @@ public class FactorialServerHandler implements CoHandler {
         }catch (final Throwable cause){
             log.warn("Calc error", cause);
         }finally {
-            IoUtils.close(channel);
+            cleanup(channel);
         }
+    }
+
+    protected void cleanup(final CoChannel channel){
+        IoUtils.close(channel);
     }
 
     protected boolean calc(Continuation co)throws IOException {
@@ -61,7 +65,7 @@ public class FactorialServerHandler implements CoHandler {
     }
 
     protected FactorialResponse doCalc(Continuation co, final FactorialRequest request){
-        System.out.println(String.format("Calc begin: request(%d, %d) ", request.from, request.to));
+        log.debug("Calc begin: request {}", request);
         final CoChannel channel = (CoChannel)co.getContext();
 
         // execute computation task in worker thread instead of in coroutine!
@@ -79,9 +83,9 @@ public class FactorialServerHandler implements CoHandler {
         });
 
         try {
-            System.out.println(String.format("Calc wait: request(%d, %d) ", request.from, request.to));
+            log.debug("Calc: request {}", request);
             FactorialResponse response = f.get(co);
-            System.out.println("Calc result: " + response.factor);
+            log.debug("Calc end: factor {}", response.factor);
             return response;
         }catch(final ExecutionException e){
             log.warn("Calc error", e);
