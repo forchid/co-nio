@@ -3,6 +3,8 @@ package io.conio;
 import com.offbynull.coroutines.user.Continuation;
 import io.conio.util.CoFuture;
 import io.conio.util.IoUtils;
+import org.slf4j.LoggerFactory;
+import org.slf4j.Logger;
 
 import java.io.EOFException;
 import java.io.IOException;
@@ -11,6 +13,7 @@ import java.nio.ByteBuffer;
 import java.util.concurrent.ExecutionException;
 
 public class FactorialServerHandler implements CoHandler {
+    final static Logger log = LoggerFactory.getLogger(FactorialServerHandler.class);
     protected final ByteBuffer buffer = ByteBuffer.allocate(8192);
 
     public FactorialServerHandler(){
@@ -58,6 +61,7 @@ public class FactorialServerHandler implements CoHandler {
     }
 
     protected FactorialResponse doCalc(Continuation co, final FactorialRequest request){
+        System.out.println(String.format("Calc begin: request(%d, %d) ", request.from, request.to));
         final CoChannel channel = (CoChannel)co.getContext();
 
         // execute computation task in worker thread instead of in coroutine!
@@ -75,9 +79,13 @@ public class FactorialServerHandler implements CoHandler {
         });
 
         try {
-            return f.get(co);
+            System.out.println(String.format("Calc wait: request(%d, %d) ", request.from, request.to));
+            FactorialResponse response = f.get(co);
+            System.out.println("Calc result: " + response.factor);
+            return response;
         }catch(final ExecutionException e){
-            return new FactorialResponse(e.getCause().getMessage());
+            log.warn("Calc error", e);
+            return new FactorialResponse("Calc error");
         }
     }
 

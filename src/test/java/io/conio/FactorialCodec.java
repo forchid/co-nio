@@ -35,6 +35,9 @@ public class FactorialCodec {
    public final static int encodeRequest(Continuation co, ByteBuffer buffer,
                                           FactorialRequest request)throws IOException {
        final CoChannel channel = (CoChannel)co.getContext();
+       if(channel == null){
+           throw new NullPointerException("channel null");
+       }
        buffer.clear();
        // Send: From(4), To(4)
        buffer.putInt(request.from);

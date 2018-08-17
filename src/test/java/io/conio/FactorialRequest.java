@@ -12,4 +12,9 @@ public class FactorialRequest {
         this.to   = to;
     }
 
+    @Override
+    public String toString(){
+        return String.format("[%d, %d]", from, to);
+    }
+
 }

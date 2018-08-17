@@ -1,5 +1,7 @@
 package io.conio;
 
+import org.apache.commons.lang3.ObjectUtils;
+
 import java.math.BigInteger;
 
 public class FactorialResponse {
@@ -11,10 +13,16 @@ public class FactorialResponse {
 
     public FactorialResponse(BigInteger factor){
         this(factor, null);
+        if(factor == null){
+            throw new NullPointerException("factor null");
+        }
     }
 
     public FactorialResponse(String error){
         this(null, error);
+        if(error == null){
+            throw new NullPointerException("error null");
+        }
     }
 
     protected FactorialResponse(BigInteger factor, String error){

@@ -46,7 +46,9 @@ public abstract class PullCoChannel extends CoChannel {
 
     @Override
     public void run(Continuation co){
+        co.setContext(this);
         log.debug("{}: started", name);
+
         for(;isOpen();) {
             handleCoTasks(co);
             try{
@@ -88,7 +90,7 @@ public abstract class PullCoChannel extends CoChannel {
         private V value;
         private Throwable cause;
 
-        private PullCoChannel waiter;
+        private CoChannel waiter;
 
         public CoFutureTask(final CoCallable<V> coCallable){
             this.coCallable = coCallable;
@@ -97,7 +99,7 @@ public abstract class PullCoChannel extends CoChannel {
         @Override
         public V get(Continuation co) throws ExecutionException {
             if(!isDone()){
-                waiter = (PullCoChannel)co.getContext();
+                waiter = (CoChannel)co.getContext();
                 co.suspend();
             }
             if(cause != null){
