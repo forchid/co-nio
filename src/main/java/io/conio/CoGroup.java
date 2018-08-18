@@ -109,20 +109,22 @@ public class CoGroup {
     }
 
     public void connect(InetSocketAddress remote, CoHandler handler) {
+        final IoGroup group = ioGroup;
         if(isStopped()){
             throw new IllegalStateException(name+" has stopped");
         }
         if(isShutdown()){
             throw new IllegalStateException(name+" has shutdown");
         }
-        ioGroup.connect(new ConnectRequest(remote, handler));
+        group.connect(new ConnectRequest(remote, handler));
     }
 
-    public CoFuture<PullCoChannel> connect(CoChannel source, String host, int port) {
+    public CoFuture<PullCoChannel> connect(CoRunner source, String host, int port) {
         return connect(source, new InetSocketAddress(host, port));
     }
 
-    public CoFuture<PullCoChannel> connect(CoChannel source, InetSocketAddress remote) {
+    public CoFuture<PullCoChannel> connect(CoRunner source, InetSocketAddress remote) {
+        final IoGroup group = ioGroup;
         if(isStopped()){
             throw new IllegalStateException(name+" has stopped");
         }
@@ -132,7 +134,47 @@ public class CoGroup {
         if(!inGroup()){
             throw new IllegalStateException("The current coroutine not in this CoGroup " + name);
         }
-        return ioGroup.connect(source, new ConnectRequest(remote, null));
+        return group.connect(source, new ConnectRequest(remote, null));
+    }
+
+    /**
+     * <p>
+     *  Start a pull mode coroutine that runs on this group.
+     * </p>
+     * @author little-pan
+     * @since 2018-08-18
+     * @return a PullCoRunner
+     */
+    public PullCoRunner startCoroutine(){
+        final IoGroup group = ioGroup;
+        if(isStopped()){
+            throw new IllegalStateException(name+" has stopped");
+        }
+        if(isShutdown()){
+            throw new IllegalStateException(name+" has shutdown");
+        }
+        if(!inGroup()){
+            throw new IllegalStateException("The current coroutine not in this CoGroup " + name);
+        }
+        return group.startCoroutine();
+    }
+
+    /**
+     * <p>
+     *  Start a push mode coroutine that runs on this group.
+     * </p>
+     * @author little-pan
+     * @since 2018-08-18
+     */
+    public void startCoroutine(CoHandler handler){
+        final IoGroup group = ioGroup;
+        if(isStopped()){
+            throw new IllegalStateException(name+" has stopped");
+        }
+        if(isShutdown()){
+            throw new IllegalStateException(name+" has shutdown");
+        }
+        group.startCoroutine(handler);
     }
 
     protected IoGroup bootNio(String name){
@@ -231,7 +273,8 @@ public class CoGroup {
         protected final CoGroup coGroup;
 
         protected Thread runner;
-        private int nextId;
+        private int nextChanId;
+        private int nextCoroId;
 
         protected IoGroup(CoGroup coGroup, String name){
             this.coGroup = coGroup;
@@ -242,7 +285,19 @@ public class CoGroup {
         @Override
         public abstract void run();
 
-        public abstract CoFuture<PullCoChannel> connect(CoChannel source, ConnectRequest request);
+        public PullCoRunner startCoroutine(){
+            final PullCoRunner co = new PullCoRunner(nextCoroId++, coGroup);
+            co.resume();
+            return co;
+        }
+
+        public void startCoroutine(CoHandler handler){
+            final PushCoRunner co = new PushCoRunner(nextCoroId++, coGroup);
+            co.handler(handler);
+            offer(() -> { co.resume();});
+        }
+
+        public abstract CoFuture<PullCoChannel> connect(CoRunner source, ConnectRequest request);
 
         public abstract void connect(ConnectRequest request);
 
@@ -263,12 +318,20 @@ public class CoGroup {
             }catch(InterruptedException e){}
         }
 
+        public void yield(Continuation co){
+            final CoRunner coRun = (CoRunner)co.getContext();
+            offer(() -> {
+                coRun.resume();
+            });
+            co.suspend();
+        }
+
         public final boolean inGroup(){
             return (Thread.currentThread() == runner);
         }
 
         public int nextId(){
-            return nextId++;
+            return nextChanId++;
         }
 
         protected boolean offer(CoTask coTask){
@@ -287,10 +350,17 @@ public class CoGroup {
 
     interface IoChannel {
         CoChannel coChannel();
+
         int read(Continuation co, ByteBuffer dst) throws IOException;
         int write(Continuation co, ByteBuffer src) throws IOException;
+
         boolean isOpen();
         void close();
+
+        default CoRunner coRunner(){
+            return (CoRunner)coChannel();
+        }
+
     }// IoChannel
 
     interface CoTask extends Runnable {}
@@ -299,14 +369,14 @@ public class CoGroup {
         return ioGroup.offer(coTask);
     }
 
-    <V> CoFuture<V> execute(CoChannel chan, final Callable<V> callable){
-        final CoGroup group = chan.group();
+    <V> CoFuture<V> execute(CoRunner source, final Callable<V> callable){
+        final CoGroup group = source.group();
         if(group != this){
-            throw new IllegalArgumentException("CoChannel group not this group");
+            throw new IllegalArgumentException("CoRunner group not this group");
         }
 
         final ExecutorService exec = group.workerThreadPool;
-        final CoFutureImpl<V> cf = new CoFutureImpl<>(chan);
+        final CoFutureImpl<V> cf = new CoFutureImpl<>(source);
         exec.execute(() -> {
             try {
                 final V v = callable.call();
@@ -320,21 +390,28 @@ public class CoGroup {
         return cf;
     }// execute()
 
+    final void yield(Continuation co){
+        ioGroup.yield(co);
+    }
+
     static class CoFutureImpl<V> implements CoFuture<V>, CoTask {
-        final CoChannel chan;
+        final CoRunner source;
         private boolean waited;
 
         private volatile boolean done;
         private V value;
         private Throwable cause;
 
-        public CoFutureImpl(CoChannel chan){
-            this.chan = chan;
+        public CoFutureImpl(CoRunner source){
+            this.source = source;
         }
 
         @Override
         public V get(Continuation co) throws ExecutionException {
-            for(;!isDone();){
+            if(source != co.getContext()){
+                throw new IllegalArgumentException("Continuation context not this future source");
+            }
+            if(!isDone()){
                 waited = true;
                 co.suspend();
             }
@@ -367,7 +444,7 @@ public class CoGroup {
         @Override
         public void run() {
             if(waited){
-                chan.resume();
+                source.resume();
             }
         }
 
@@ -510,9 +587,10 @@ public class CoGroup {
             final SocketChannel chan = ioChan.chan;
             boolean failed = true;
             try{
+                final CoRunner coRun = ioChan.coRunner();
                 chan.finishConnect();
-                log.debug("{}: start a new coChannel {}", name, coChan.name);
-                coChan.resume();
+                log.debug("{}: start a new coChannel {}", name, coRun.name);
+                coRun.resume();
                 handler.run();
                 failed = false;
             }catch(final Throwable cause){
@@ -527,13 +605,13 @@ public class CoGroup {
         }
 
         protected void handleRead(final SelectionKey key) {
-            final IoChannel coChan = (IoChannel) key.attachment();
-            coChan.coChannel().resume();
+            final IoChannel ioChan = (IoChannel) key.attachment();
+            ioChan.coRunner().resume();
         }
 
         protected void handleWrite(final SelectionKey key) {
-            final IoChannel coChan = (IoChannel) key.attachment();
-            coChan.coChannel().resume();
+            final IoChannel ioChan = (IoChannel) key.attachment();
+            ioChan.coRunner().resume();
         }
 
         private void handleCoTasks(){
@@ -559,7 +637,7 @@ public class CoGroup {
         }
 
         @Override
-        public CoFuture<PullCoChannel> connect(CoChannel source, ConnectRequest request) {
+        public CoFuture<PullCoChannel> connect(CoRunner source, ConnectRequest request) {
             return new NioConnectHandler(this, request).connect(source);
         }
 
@@ -587,7 +665,7 @@ public class CoGroup {
                 this.request = request;
             }
 
-            public CoFuture<PullCoChannel> connect(CoChannel source) {
+            public CoFuture<PullCoChannel> connect(CoRunner source) {
                 connect();
                 return (this.future = new CoFutureImpl<>(source));
             }
@@ -708,6 +786,9 @@ public class CoGroup {
 
             @Override
             public int read(Continuation co, ByteBuffer dst) throws IOException {
+                if(coChan != co.getContext()){
+                    throw new IllegalArgumentException("Continuation context not this CoChannel");
+                }
                 if(!dst.hasRemaining()){
                     return 0;
                 }
@@ -743,6 +824,9 @@ public class CoGroup {
 
             @Override
             public int write(Continuation co, ByteBuffer src) throws IOException {
+                if(coChan != co.getContext()){
+                    throw new IllegalArgumentException("Continuation context not this CoChannel");
+                }
                 if(!src.hasRemaining()){
                     return 0;
                 }
@@ -775,7 +859,7 @@ public class CoGroup {
                 IoUtils.close(chan);
                 if(log.isDebugEnabled()) {
                     final CoGroup group = ioGroup.coGroup;
-                    log.debug("{}: {} closed", group.name, coChan.name);
+                    log.debug("{}: {} closed", group.name, coRunner().name);
                 }
             }
 
@@ -886,8 +970,14 @@ public class CoGroup {
             }
 
             @Override
+            public void stop(){
+                this.close();
+            }
+
+            @Override
             public void close() {
                 ioChan.close();
+                super.stop();
             }
         }// NioPullCoChannel
 
@@ -987,7 +1077,7 @@ public class CoGroup {
         }
 
         @Override
-        public CoFuture<PullCoChannel> connect(final CoChannel source, ConnectRequest request) {
+        public CoFuture<PullCoChannel> connect(final CoRunner source, ConnectRequest request) {
             final AioConnectHandler handler = new AioConnectHandler(this, request);
             return handler.connect(source);
         }
@@ -1035,7 +1125,7 @@ public class CoGroup {
                 aioGroup.incIoOps();
             }
 
-            public CoFuture<PullCoChannel> connect(final CoChannel source) {
+            public CoFuture<PullCoChannel> connect(final CoRunner source) {
                 boolean failed = true;
                 try{
                     connect();
@@ -1058,6 +1148,7 @@ public class CoGroup {
                 log.debug("{}: Handle connection result", aioGroup.name);
 
                 CoChannel coChan  = null;
+                CoRunner coRun  = null;
                 CoHandler handler = request.handler;
                 try {
                     final CoGroup coGroup = aioGroup.coGroup;
@@ -1069,11 +1160,13 @@ public class CoGroup {
                         }
                         final PullCoChannel pullChan = new AioPullCoChannel(aioGroup, channel);
                         coChan = pullChan;
+                        coRun  = pullChan;
                         chanInit.initialize(pullChan, false);
                         future.setValue(pullChan);
                     } else {
                         final PushCoChannel pushChan = new AioPushCoChannel(aioGroup, channel);
                         coChan = pushChan;
+                        coRun  = pushChan;
                         chanInit.initialize(pushChan, false);
                         if (handler == null && (handler = pushChan.handler()) == null) {
                             log.warn("{}: Connect handler not set, so close the channel", aioGroup.name);
@@ -1085,8 +1178,8 @@ public class CoGroup {
                             return;
                         }
                     }
-                    log.debug("{}: start a new CoChannel {}", aioGroup.name, coChan.name);
-                    coChan.resume();
+                    log.debug("{}: start a new CoChannel {}", aioGroup.name, coRun.name);
+                    coRun.resume();
                     failed = false;
                 }catch (final Throwable e){
                     if(pull){
@@ -1297,8 +1390,14 @@ public class CoGroup {
             }
 
             @Override
+            public void stop(){
+                this.close();
+            }
+
+            @Override
             public void close() {
                 ioChan.close();
+                super.stop();
             }
         }// AioPullCoChannel
 
@@ -1323,6 +1422,9 @@ public class CoGroup {
 
             @Override
             public int read(Continuation co, ByteBuffer dst) throws IOException {
+                if(coChan != co.getContext()){
+                    throw new IllegalArgumentException("Continuation context not this CoChannel");
+                }
                 if(!dst.hasRemaining()){
                     return 0;
                 }
@@ -1348,6 +1450,9 @@ public class CoGroup {
 
             @Override
             public int write(Continuation co, ByteBuffer src) throws IOException {
+                if(coChan != co.getContext()){
+                    throw new IllegalArgumentException("Continuation context not this CoChannel");
+                }
                 if(!src.hasRemaining()){
                     return 0;
                 }
@@ -1385,7 +1490,7 @@ public class CoGroup {
                 IoUtils.close(chan);
                 if(log.isDebugEnabled()){
                     final CoGroup group = aioGroup.coGroup;
-                    log.debug("{}: {} closed", group.name, coChan.name);
+                    log.debug("{}: {} closed", group.name, coRunner().name);
                 }
             }
 
@@ -1424,7 +1529,7 @@ public class CoGroup {
                 @Override
                 public void run() {
                     result = this;
-                    coChannel().resume();
+                    coRunner().resume();
                 }
             }// IoResultHandler
 

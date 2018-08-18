@@ -1,6 +1,7 @@
 package io.conio;
 
 import com.offbynull.coroutines.user.Continuation;
+import io.conio.util.IoUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -29,7 +30,7 @@ public class EchoClientHandler extends BaseTest implements CoHandler {
 
     @Override
     public void handle(Continuation co) {
-        final CoChannel channel = (CoChannel)co.getContext();
+        final PushCoChannel channel = (PushCoChannel)co.getContext();
         try{
             final ByteBuffer dbuf = ByteBuffer.wrap(data);
             final CoGroup group = channel.group();
@@ -57,7 +58,7 @@ public class EchoClientHandler extends BaseTest implements CoHandler {
         }catch(final IOException e){
             log.warn("IO error", e);
         }finally {
-            channel.close();
+            IoUtils.close(channel);
         }
     }
 

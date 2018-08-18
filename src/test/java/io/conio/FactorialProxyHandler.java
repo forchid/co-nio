@@ -25,7 +25,7 @@ public class FactorialProxyHandler extends FactorialServerHandler {
 
     @Override
     protected FactorialResponse doCalc(final Continuation co, final FactorialRequest request){
-        final CoChannel channel = (CoChannel)co.getContext();
+        final PushCoChannel channel = (PushCoChannel)co.getContext();
         final CoGroup group = channel.group();
         final InetSocketAddress backends[] = this.backends;
 

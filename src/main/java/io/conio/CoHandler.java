@@ -6,7 +6,7 @@ import org.slf4j.LoggerFactory;
 
 /**
  * <p>
- * The coroutine channel handler.
+ * The coroutine handler for CoChannel and CoRunner etc.
  * </p>
  * @since 2018-08-09
  * @author little-pan
