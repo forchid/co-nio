@@ -4,6 +4,7 @@ import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.nio.ByteBuffer;
 import java.nio.channels.*;
+import java.sql.Time;
 import java.util.Iterator;
 import java.util.Set;
 import java.util.concurrent.*;
@@ -14,6 +15,7 @@ import com.offbynull.coroutines.user.Coroutine;
 import com.offbynull.coroutines.user.CoroutineRunner;
 import io.conio.util.CoFuture;
 import io.conio.util.IoUtils;
+import io.conio.util.ScheduledCoFuture;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -40,7 +42,7 @@ public class CoGroup {
 
     private ChannelInitializer initializer = ChannelInitializer.NOOP;
     private int workerThreads = Runtime.getRuntime().availableProcessors();
-    private ExecutorService workerThreadPool;
+    private ScheduledExecutorService workerThreadPool;
 
     protected CoGroup(){
 
@@ -326,6 +328,34 @@ public class CoGroup {
             co.suspend();
         }
 
+        ScheduledCoFuture<?> schedule(CoHandler handler, final long delay){
+            final CoGroup group = coGroup;
+            final ScheduledCoFutureImpl<?> coFuture = new ScheduledCoFutureImpl<>(group, handler);
+            final ScheduledExecutorService executors = group.workerThreadPool;
+            final ScheduledFuture<?> schedFuture = executors.schedule(() -> {
+                if(group.isShutdown()){
+                    return;
+                }
+                offer(coFuture);
+            }, delay, TimeUnit.MILLISECONDS);
+            coFuture.setScheduledFuture(schedFuture);
+            return coFuture;
+        }
+
+        ScheduledCoFuture<?> schedule(CoHandler handler, long initialDelay, long period){
+            final CoGroup group = coGroup;
+            final ScheduledCoFutureImpl<?> coFuture = new ScheduledCoFutureImpl<>(group, handler);
+            final ScheduledExecutorService executors = group.workerThreadPool;
+            final ScheduledFuture<?> schedFuture = executors.scheduleAtFixedRate(() -> {
+                if(group.isShutdown()){
+                    return;
+                }
+                offer(coFuture);
+            }, initialDelay, period, TimeUnit.MILLISECONDS);
+            coFuture.setScheduledFuture(schedFuture);
+            return coFuture;
+        }
+
         public final boolean inGroup(){
             return (Thread.currentThread() == runner);
         }
@@ -394,6 +424,14 @@ public class CoGroup {
         ioGroup.yield(co);
     }
 
+    final ScheduledCoFuture<?> schedule(CoHandler handler, final long delay){
+        return ioGroup.schedule(handler, delay);
+    }
+
+    final ScheduledCoFuture<?> schedule(CoHandler handler, long initialDelay, long period){
+        return ioGroup.schedule(handler, initialDelay, period);
+    }
+
     static class CoFutureImpl<V> implements CoFuture<V>, CoTask {
         final CoRunner source;
         private boolean waited;
@@ -449,6 +487,53 @@ public class CoGroup {
         }
 
     }// CoFutureImpl
+
+    static class ScheduledCoFutureImpl<V> implements ScheduledCoFuture<V>, CoTask {
+        final CoGroup group;
+        final CoHandler handler;
+
+        private ScheduledFuture<?> schedFuture;
+
+        public ScheduledCoFutureImpl(CoGroup group, CoHandler handler){
+            this.group = group;
+            this.handler = handler;
+        }
+
+        @Override
+        public V get(Continuation co) throws ExecutionException {
+            throw new ExecutionException(new UnsupportedOperationException("No result"));
+        }
+
+        @Override
+        public boolean isDone() {
+            return schedFuture.isDone();
+        }
+
+        @Override
+        public void run() {
+            group.startCoroutine(handler);
+        }
+
+        public void setScheduledFuture(ScheduledFuture<?> schedFuture){
+            this.schedFuture = schedFuture;
+        }
+
+        @Override
+        public boolean isCancelled() {
+            return schedFuture.isCancelled();
+        }
+
+        @Override
+        public boolean cancel(boolean mayInterruptIfRunning) {
+            return schedFuture.cancel(mayInterruptIfRunning);
+        }
+
+        @Override
+        public long getDelay() {
+            return schedFuture.getDelay(TimeUnit.MILLISECONDS);
+        }
+
+    }// ScheduleCoFutureImpl
 
     static class NioGroup extends  IoGroup {
         final static Logger log = LoggerFactory.getLogger(NioGroup.class);
@@ -1624,7 +1709,7 @@ public class CoGroup {
             if(workerThreads < 1){
                 throw new IllegalArgumentException("workerThreads smaller than 1: " + workerThreads);
             }
-            group.workerThreadPool = Executors.newFixedThreadPool(workerThreads, new ThreadFactory() {
+            group.workerThreadPool = Executors.newScheduledThreadPool(workerThreads, new ThreadFactory() {
                 final AtomicInteger counter = new AtomicInteger(0);
                 @Override
                 public Thread newThread(Runnable r) {

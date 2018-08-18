@@ -9,6 +9,7 @@ import com.offbynull.coroutines.user.Continuation;
 import com.offbynull.coroutines.user.Coroutine;
 import com.offbynull.coroutines.user.CoroutineRunner;
 import io.conio.util.CoFuture;
+import io.conio.util.ScheduledCoFuture;
 
 /**
  * <p>
@@ -25,6 +26,9 @@ public interface CoChannel extends Closeable {
     CoGroup group();
 
     <V> CoFuture<V> execute(final Callable<V> callable);
+
+    ScheduledCoFuture<?> schedule(CoHandler handler, final long delay);
+    ScheduledCoFuture<?> schedule(CoHandler handler, long initialDelay, long period);
 
     int read(Continuation co, ByteBuffer dst) throws IOException;
     int write(Continuation co, ByteBuffer src) throws IOException;

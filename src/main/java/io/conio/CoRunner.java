@@ -4,6 +4,7 @@ import com.offbynull.coroutines.user.Continuation;
 import com.offbynull.coroutines.user.Coroutine;
 import com.offbynull.coroutines.user.CoroutineRunner;
 import io.conio.util.CoFuture;
+import io.conio.util.ScheduledCoFuture;
 
 import java.util.concurrent.Callable;
 
@@ -45,7 +46,7 @@ public abstract class CoRunner implements Coroutine {
 
     /**
      * <p>
-     * Execute the callable in channel worker thread pool.
+     *     Execute the callable in channel worker thread pool.
      * </p>
      *
      * @param callable
@@ -54,6 +55,37 @@ public abstract class CoRunner implements Coroutine {
      */
     public <V> CoFuture<V> execute(final Callable<V> callable){
         return group.execute(this, callable);
+    }
+
+    /**
+     * <p>
+     *     Schedule handler after delay millis.
+     * </p>
+     * @param handler
+     * @param delay
+     * @author little-pan
+     * @since 2018-08-18
+     *
+     * @return a scheduled coroutine future
+     */
+    public ScheduledCoFuture<?> schedule(CoHandler handler, final long delay){
+        return group.schedule(handler, delay);
+    }
+
+    /**
+     * <p>
+     *     Schedule the handler after init delay millis, then schedule it at fixed period.
+     * </p>
+     * @param handler
+     * @param initialDelay
+     * @param period
+     * @author little-pan
+     * @since 2018-08-18
+     *
+     * @return the scheduled coroutine future
+     */
+    public ScheduledCoFuture<?> schedule(CoHandler handler, long initialDelay, long period){
+        return group.schedule(handler, initialDelay, period);
     }
 
     public CoGroup group(){
