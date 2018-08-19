@@ -16,8 +16,9 @@ import java.util.concurrent.Callable;
  * @since 2018-08-18
  */
 public abstract class CoRunner implements Coroutine {
+    final CoRunner wrapped;
 
-    final CoroutineRunner runner = new CoroutineRunner(this);
+    final CoroutineRunner runner;
     protected final CoGroup group;
 
     public final int id;
@@ -27,6 +28,16 @@ public abstract class CoRunner implements Coroutine {
         this.id = id;
         this.name = name;
         this.group = group;
+        this.runner = new CoroutineRunner(this);
+        this.wrapped = null;
+    }
+
+    protected CoRunner(CoRunner wrapped){
+        this.id = wrapped.id;
+        this.name = wrapped.name;
+        this.group = wrapped.group;
+        this.runner = wrapped.runner;
+        this.wrapped = wrapped;
     }
 
     public int id(){
@@ -94,6 +105,11 @@ public abstract class CoRunner implements Coroutine {
 
     final boolean resume(){
         return runner.execute();
+    }
+
+    @Override
+    public String toString(){
+        return name;
     }
 
 }

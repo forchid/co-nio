@@ -30,4 +30,9 @@ public class FactorialResponse {
         this.error  = error;
     }
 
+    @Override
+    public String toString(){
+        return String.format("factorial: %s, error: %s", factor, error);
+    }
+
 }

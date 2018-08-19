@@ -5,7 +5,9 @@ import java.net.InetSocketAddress;
 import java.nio.ByteBuffer;
 import java.nio.channels.*;
 import java.sql.Time;
+import java.util.ArrayList;
 import java.util.Iterator;
+import java.util.List;
 import java.util.Set;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -13,9 +15,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import com.offbynull.coroutines.user.Continuation;
 import com.offbynull.coroutines.user.Coroutine;
 import com.offbynull.coroutines.user.CoroutineRunner;
-import io.conio.util.CoFuture;
-import io.conio.util.IoUtils;
-import io.conio.util.ScheduledCoFuture;
+import io.conio.util.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -41,7 +41,7 @@ public class CoGroup {
     private IoGroup ioGroup;
 
     private ChannelInitializer initializer = ChannelInitializer.NOOP;
-    private int workerThreads = Runtime.getRuntime().availableProcessors();
+    private int workerThreads = RtUtils.PROCESSORS;
     private ScheduledExecutorService workerThreadPool;
 
     protected CoGroup(){
@@ -121,11 +121,11 @@ public class CoGroup {
         group.connect(new ConnectRequest(remote, handler));
     }
 
-    public CoFuture<PullCoChannel> connect(CoRunner source, String host, int port) {
+    final CoFutureImpl<PullCoChannel> connect(CoRunner source, String host, int port) {
         return connect(source, new InetSocketAddress(host, port));
     }
 
-    public CoFuture<PullCoChannel> connect(CoRunner source, InetSocketAddress remote) {
+    final CoFutureImpl<PullCoChannel> connect(CoRunner source, InetSocketAddress remote) {
         final IoGroup group = ioGroup;
         if(isStopped()){
             throw new IllegalStateException(name+" has stopped");
@@ -299,7 +299,7 @@ public class CoGroup {
             offer(() -> { co.resume();});
         }
 
-        public abstract CoFuture<PullCoChannel> connect(CoRunner source, ConnectRequest request);
+        public abstract CoFutureImpl<PullCoChannel> connect(CoRunner source, ConnectRequest request);
 
         public abstract void connect(ConnectRequest request);
 
@@ -432,34 +432,13 @@ public class CoGroup {
         return ioGroup.schedule(handler, initialDelay, period);
     }
 
-    static class CoFutureImpl<V> implements CoFuture<V>, CoTask {
-        final CoRunner source;
-        private boolean waited;
+    static class CoFutureImpl<V> extends AbstractCoFuture<V> implements CoTask {
+        final static Logger log = LoggerFactory.getLogger(CoFutureImpl.class);
 
         private volatile boolean done;
-        private V value;
-        private Throwable cause;
 
-        public CoFutureImpl(CoRunner source){
-            this.source = source;
-        }
-
-        @Override
-        public V get(Continuation co) throws ExecutionException {
-            if(source != co.getContext()){
-                throw new IllegalArgumentException("Continuation context not this future source");
-            }
-            if(!isDone()){
-                waited = true;
-                co.suspend();
-            }
-            if(cause != null){
-                if(cause instanceof  ExecutionException){
-                    throw (ExecutionException)cause;
-                }
-                throw new ExecutionException(cause);
-            }
-            return value;
+        public CoFutureImpl(CoRunner waiter){
+            super(waiter);
         }
 
         @Override
@@ -467,32 +446,54 @@ public class CoGroup {
             return done;
         }
 
-        CoFutureImpl<V> setCause(Throwable cause){
-            this.cause = cause;
-            this.done = true;
+        @Override
+        protected void setDone(boolean done){
+            // always false - listeners maybe change the value or cause
+            // @author little-pan
+            // @since 2018-08-19
+            this.done = false;
+        }
+
+        @Override
+        public CoFutureImpl<V> setCause(Throwable cause){
+            super.setCause(cause);
             return this;
         }
 
-        CoFutureImpl<V> setValue(V value){
-            this.value = value;
-            this.done = true;
+        @Override
+        public CoFutureImpl<V> setValue(V value){
+            super.setValue(value);
             return this;
         }
 
         @Override
         public void run() {
-            if(waited){
-                source.resume();
+            try {
+                if (listeners != null) {
+                    for (CoFutureListener<V> lsn : listeners) {
+                        lsn.operationComplete(value, cause);
+                    }
+                }
+            } catch (final Throwable e){
+                log.warn("Co future listener error", e);
+            } finally {
+                this.done = true;
+                if(waiter != null && waited){
+                    waiter.resume();
+                }
             }
         }
 
     }// CoFutureImpl
 
     static class ScheduledCoFutureImpl<V> implements ScheduledCoFuture<V>, CoTask {
+        final static Logger log = LoggerFactory.getLogger(ScheduledCoFutureImpl.class);
+
         final CoGroup group;
         final CoHandler handler;
 
         private ScheduledFuture<?> schedFuture;
+        private List<CoFutureListener<V>> listeners;
 
         public ScheduledCoFutureImpl(CoGroup group, CoHandler handler){
             this.group = group;
@@ -510,8 +511,26 @@ public class CoGroup {
         }
 
         @Override
+        public void addListener(CoFutureListener<V> listener) {
+            if(listeners == null){
+                listeners = new ArrayList<>(2);
+            }
+            listeners.add(listener);
+        }
+
+        @Override
         public void run() {
-            group.startCoroutine(handler);
+            try{
+                if(listeners != null){
+                    for (CoFutureListener<V> lsn : listeners){
+                        lsn.operationComplete(null, null);
+                    }
+                }
+            }catch (final Throwable e){
+                log.warn("Co future listener error", e);
+            }finally {
+                group.startCoroutine(handler);
+            }
         }
 
         public void setScheduledFuture(ScheduledFuture<?> schedFuture){
@@ -722,7 +741,7 @@ public class CoGroup {
         }
 
         @Override
-        public CoFuture<PullCoChannel> connect(CoRunner source, ConnectRequest request) {
+        public CoFutureImpl<PullCoChannel> connect(CoRunner source, ConnectRequest request) {
             return new NioConnectHandler(this, request).connect(source);
         }
 
@@ -750,7 +769,7 @@ public class CoGroup {
                 this.request = request;
             }
 
-            public CoFuture<PullCoChannel> connect(CoRunner source) {
+            public CoFutureImpl<PullCoChannel> connect(CoRunner source) {
                 connect();
                 return (this.future = new CoFutureImpl<>(source));
             }
@@ -1162,7 +1181,7 @@ public class CoGroup {
         }
 
         @Override
-        public CoFuture<PullCoChannel> connect(final CoRunner source, ConnectRequest request) {
+        public CoFutureImpl<PullCoChannel> connect(final CoRunner source, ConnectRequest request) {
             final AioConnectHandler handler = new AioConnectHandler(this, request);
             return handler.connect(source);
         }
@@ -1210,7 +1229,7 @@ public class CoGroup {
                 aioGroup.incIoOps();
             }
 
-            public CoFuture<PullCoChannel> connect(final CoRunner source) {
+            public CoFutureImpl<PullCoChannel> connect(final CoRunner source) {
                 boolean failed = true;
                 try{
                     connect();

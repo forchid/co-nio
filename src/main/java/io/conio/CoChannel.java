@@ -35,4 +35,7 @@ public interface CoChannel extends Closeable {
 
     boolean isOpen();
 
+    @Override
+    void close();
+
 }

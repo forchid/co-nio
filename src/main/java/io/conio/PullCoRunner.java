@@ -1,6 +1,7 @@
 package io.conio;
 
 import com.offbynull.coroutines.user.Continuation;
+import io.conio.util.AbstractCoFuture;
 import io.conio.util.CoCallable;
 import io.conio.util.CoFuture;
 import org.slf4j.Logger;
@@ -20,16 +21,28 @@ import java.util.concurrent.ExecutionException;
 public class PullCoRunner extends CoRunner {
     final static Logger log = LoggerFactory.getLogger(PullCoRunner.class);
 
-    private final Queue<CoFutureTask<?>> coQueue = new LinkedList<>();
+    protected final PullCoRunner wrapped;
+
+    private final Queue<CoFutureTask<?>> coQueue;
     private boolean idle;
     private boolean stopped;
 
     public PullCoRunner(final int id, CoGroup group){
         super(id, "pull-co-"+id, group);
+        this.coQueue = new LinkedList<>();
+        this.wrapped = null;
     }
 
     public PullCoRunner(final int id, String name, CoGroup group){
         super(id, name, group);
+        this.coQueue = new LinkedList<>();
+        this.wrapped = null;
+    }
+
+    public PullCoRunner(PullCoRunner wrapped){
+        super(wrapped);
+        this.coQueue = wrapped.coQueue;
+        this.wrapped = wrapped;
     }
 
     /**
@@ -50,6 +63,9 @@ public class PullCoRunner extends CoRunner {
     }
 
     public boolean isStopped(){
+        if(wrapped != null){
+            return wrapped.stopped;
+        }
         return stopped;
     }
 
@@ -57,12 +73,20 @@ public class PullCoRunner extends CoRunner {
         if(isStopped()){
             return;
         }
-        stopped = true;
+        if(wrapped != null){
+            wrapped.stopped = true;
+        }else{
+            stopped = true;
+        }
         resume();
     }
 
     @Override
     public void run(Continuation co){
+        if(wrapped != null){
+            throw new IllegalStateException("Can't run PullCoRunner wrapper");
+        }
+
         co.setContext(this);
         log.debug("{}: Started", name);
 
@@ -99,35 +123,33 @@ public class PullCoRunner extends CoRunner {
     }
 
     public final boolean isIdle(){
+        if(wrapped != null){
+            return wrapped.idle;
+        }
         return idle;
     }
 
-    static class CoFutureTask<V> implements CoFuture<V>{
+    static class CoFutureTask<V> extends AbstractCoFuture<V> {
         final CoCallable<V> coCallable;
 
         private boolean done;
-        private V value;
-        private Throwable cause;
-
-        private CoRunner waiter;
 
         public CoFutureTask(final CoCallable<V> coCallable){
+            super(null);
             this.coCallable = coCallable;
         }
 
         @Override
-        public V get(Continuation co) throws ExecutionException {
-            if(!isDone()){
-                waiter = (CoRunner)co.getContext();
-                co.suspend();
-            }
-            if(cause != null){
-                if(cause instanceof  ExecutionException){
-                    throw (ExecutionException)cause;
-                }
-                throw new ExecutionException(cause);
-            }
-            return value;
+        public V get(Continuation co)throws ExecutionException{
+            waiter = (CoRunner)co.getContext();
+            return super.get(co);
+        }
+
+        @Override
+        @SuppressWarnings("unchecked")
+        public CoFuture<V> setValue(Object value){
+            super.setValue((V)value);
+            return this;
         }
 
         @Override
@@ -135,22 +157,11 @@ public class PullCoRunner extends CoRunner {
             return done;
         }
 
-        @SuppressWarnings("unchecked")
-        void setValue(Object value){
-            this.value = (V)value;
-            setDone();
-        }
-
-        void setCause(Throwable cause){
-            this.cause = cause;
-            setDone();
-        }
-
-        private void setDone(){
-            this.done = true;
-            if(waiter != null){
+        @Override
+        public void setDone(boolean done){
+            this.done = done;
+            if(waiter != null && waited){
                 waiter.resume();
-                waiter = null;
             }
         }
 

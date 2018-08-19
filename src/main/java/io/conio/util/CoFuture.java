@@ -17,4 +17,6 @@ public interface CoFuture<V> {
 
     boolean isDone();
 
+    void addListener(CoFutureListener<V> listener);
+
 }

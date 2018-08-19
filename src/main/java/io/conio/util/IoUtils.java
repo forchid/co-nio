@@ -5,9 +5,7 @@ import java.io.IOException;
 
 public final class IoUtils {
 
-    private IoUtils(){
-
-    }
+    private IoUtils(){}
 
     public final static void close(Closeable closeable){
         if(closeable != null){
