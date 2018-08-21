@@ -22,8 +22,6 @@ import java.nio.ByteBuffer;
 import java.util.concurrent.Callable;
 
 import com.offbynull.coroutines.user.Continuation;
-import com.offbynull.coroutines.user.Coroutine;
-import com.offbynull.coroutines.user.CoroutineRunner;
 import io.conio.util.CoFuture;
 import io.conio.util.ScheduledCoFuture;
 

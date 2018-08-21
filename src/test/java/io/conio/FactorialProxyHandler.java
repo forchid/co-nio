@@ -33,17 +33,16 @@ public class FactorialProxyHandler extends FactorialServerHandler {
     final static Logger log = LoggerFactory.getLogger(FactorialProxyHandler.class);
 
     final InetSocketAddress backends[];
-    final PullChannelPool chanPool;
 
-    public FactorialProxyHandler(InetSocketAddress backends[], final PullChannelPool chanPool){
+    public FactorialProxyHandler(InetSocketAddress backends[]){
         this.backends = backends;
-        this.chanPool = chanPool;
     }
 
     @Override
     protected FactorialResponse doCalc(final Continuation co, final FactorialRequest request){
         final PushCoChannel channel = (PushCoChannel)co.getContext();
         final InetSocketAddress backends[] = this.backends;
+        final PullChannelPool chanPool = channel.pullChannelPool();
 
         final List<CoFuture<PullCoChannel>> cfutures = new ArrayList<>(backends.length);
         for(int i = 0; i < backends.length; ++i){

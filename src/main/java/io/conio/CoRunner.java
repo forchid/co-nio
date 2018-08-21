@@ -119,6 +119,10 @@ public abstract class CoRunner implements Coroutine {
         return group;
     }
 
+    public PullChannelPool pullChannelPool(){
+        return group.getPullChannelPool();
+    }
+
     final boolean resume(){
         return runner.execute();
     }

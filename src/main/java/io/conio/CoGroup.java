@@ -20,7 +20,6 @@ import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.nio.ByteBuffer;
 import java.nio.channels.*;
-import java.sql.Time;
 import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
@@ -59,6 +58,8 @@ public class CoGroup {
     private ChannelInitializer initializer = ChannelInitializer.NOOP;
     private int workerThreads = RtUtils.PROCESSORS;
     private ScheduledExecutorService workerThreadPool;
+
+    private PullChannelPool pullChannelPool;
 
     protected CoGroup(){
 
@@ -153,6 +154,18 @@ public class CoGroup {
             throw new IllegalStateException("The current coroutine not in this CoGroup " + name);
         }
         return group.connect(source, new ConnectRequest(remote, null));
+    }
+
+    final PullChannelPool getPullChannelPool(){
+        return pullChannelPool;
+    }
+
+    private void closePullChannelPool(){
+        final PullChannelPool pool = getPullChannelPool();
+        if(pool != null){
+            pool.close();
+            pullChannelPool = null;
+        }
     }
 
     /**
@@ -388,6 +401,7 @@ public class CoGroup {
             coGroup.stopped = true;
             coGroup.ioGroup = null;
             coQueue.clear();
+            coGroup.closePullChannelPool();
             coGroup.workerThreadPool.shutdown();
             log.info("{}: Stopped",  name);
         }
@@ -627,7 +641,9 @@ public class CoGroup {
                         log.debug("{}: shutdown", name);
                         // 3.1 not accept any new connection
                         IoUtils.close(serverChan);
-                        // 3.2 check other connections closed
+                        // 3.2 close pull channel pool
+                        coGroup.closePullChannelPool();
+                        // 3.3 check other connections closed
                         final Set<SelectionKey> keys = selector.keys();
                         final int keySize = keys.size();
                         if(keySize == 0){
@@ -1150,7 +1166,11 @@ public class CoGroup {
                         handler.run();
                     }
                     if(coGroup.isShutdown()){
+                        // 1. close acceptor
                         stopAcceptor();
+                        // 2. close pull channel pool
+                        coGroup.closePullChannelPool();
+                        // 3. handle remaining CoTasks
                         for(;;){
                             final CoTask h = coQueue.poll();
                             if(h == null){
@@ -1692,6 +1712,10 @@ public class CoGroup {
     public static class Builder {
         private CoGroup group;
 
+        // pull channel pool settings
+        // @since 2018-08-21 little-pan
+        private PullChannelPool.Builder pullChannelPoolBuilder;
+
         protected Builder(){
             this.group = new CoGroup();
         }
@@ -1726,7 +1750,7 @@ public class CoGroup {
             return this;
         }
 
-        public Builder setworkerThreads(int workerThreads){
+        public Builder setWorkerThreads(int workerThreads){
             group.workerThreads = workerThreads;
             return this;
         }
@@ -1734,6 +1758,35 @@ public class CoGroup {
         public Builder channelInitializer(ChannelInitializer initializer){
             group.initializer = initializer;
             return this;
+        }
+
+        public Builder setPullChannelPoolName(String poolName){
+            initPullChannelPoolBuilder();
+            pullChannelPoolBuilder.setName(poolName);
+            return this;
+        }
+
+        public Builder setPullChannelPoolMaxSize(int maxSize){
+            initPullChannelPoolBuilder();
+            pullChannelPoolBuilder.setMaxSize(maxSize);
+            return this;
+        }
+
+        public Builder setPullChannelPoolWaitTime(long waitTime){
+            initPullChannelPoolBuilder();
+            pullChannelPoolBuilder.setWaitTime(waitTime);
+            return this;
+        }
+
+        public Builder enablePullChannelPool(){
+            initPullChannelPoolBuilder();
+            return this;
+        }
+
+        private void initPullChannelPoolBuilder(){
+            if(pullChannelPoolBuilder == null){
+                pullChannelPoolBuilder = PullChannelPool.newBuilder(group);
+            }
         }
 
         public CoGroup build(){
@@ -1744,6 +1797,11 @@ public class CoGroup {
             if(workerThreads < 1){
                 throw new IllegalArgumentException("workerThreads smaller than 1: " + workerThreads);
             }
+
+            if(pullChannelPoolBuilder != null) {
+                group.pullChannelPool = pullChannelPoolBuilder.build();
+            }
+
             group.workerThreadPool = Executors.newScheduledThreadPool(workerThreads, new ThreadFactory() {
                 final AtomicInteger counter = new AtomicInteger(0);
                 @Override
@@ -1767,6 +1825,6 @@ public class CoGroup {
             this.remote = remote;
             this.handler= handler;
         }
-    }
+    }// ConnectRequest
 
 }

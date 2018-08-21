@@ -28,11 +28,10 @@ import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.nio.ByteBuffer;
 import java.util.*;
-import java.util.concurrent.ExecutionException;
 
 /**
  * <p>
- *     The coroutine pull mode channel pool.
+ *     The coroutine pull mode channel pool in a CoGroup.
  * </p>
  * @author little-pan
  * @since 2018-08-19
@@ -40,21 +39,25 @@ import java.util.concurrent.ExecutionException;
 public class PullChannelPool implements Closeable {
     final static Logger log = LoggerFactory.getLogger(PullChannelPool.class);
 
-    private PullChannelPool(){}
-
     private String name = "PullChanPool";
-    private int maxPoolSize = (RtUtils.PROCESSORS << 2) + 1;
+    private int maxSize = (RtUtils.PROCESSORS << 2) + 1;
     private long waitTime = 30000L;
     private boolean closed;
 
     private Map<InetSocketAddress, SaPool> saPools = new HashMap<>();
 
+    private final CoGroup group;
+
+    private PullChannelPool(CoGroup group){
+        this.group = group;
+    }
+
     public String getName(){
         return name;
     }
 
-    public int getMaxPoolSize(){
-        return maxPoolSize;
+    public int getMaxSize(){
+        return maxSize;
     }
 
     public long getWaitTime(){
@@ -66,6 +69,9 @@ public class PullChannelPool implements Closeable {
     }
 
     public CoFuture<PullCoChannel> getChannel(Continuation co, InetSocketAddress sa, PriotityKey priotityKey){
+        if(!group.inGroup()){
+            throw new IllegalStateException("Current thread not in CoGroup " + group.getName());
+        }
         if(!isOpen()){
             throw new IllegalStateException(name+" closed");
         }
@@ -84,6 +90,9 @@ public class PullChannelPool implements Closeable {
 
     @Override
     public void close(){
+        if(!group.inGroup()){
+            throw new IllegalStateException("Current thread not in CoGroup " + group.getName());
+        }
         if(!isOpen()){
             log.debug("{}: closed", name);
             return;
@@ -98,8 +107,8 @@ public class PullChannelPool implements Closeable {
         log.info("{}: Closed", name);
     }
 
-    public final static Builder newBuilder(){
-        return new Builder();
+    final static Builder newBuilder(CoGroup group){
+        return new Builder(group);
     }
 
     static class SaPool implements Closeable {
@@ -151,7 +160,7 @@ public class PullChannelPool implements Closeable {
                 }
 
                 log.debug("{}: No free channel in this pool - poolSize = {}", address, poolSize);
-                if(poolSize < parentPool.maxPoolSize){
+                if(poolSize < parentPool.maxSize){
                     break;
                 }
 
@@ -293,12 +302,12 @@ public class PullChannelPool implements Closeable {
         PriotityKey SINGLE = new PriotityKey() {};
     }// PriotityKey
 
-    public static class Builder {
+    static class Builder {
 
         private PullChannelPool pool;
 
-        Builder(){
-            pool = new PullChannelPool();
+        Builder(CoGroup group){
+            pool = new PullChannelPool(group);
         }
 
         public Builder setName(String name){
@@ -306,11 +315,11 @@ public class PullChannelPool implements Closeable {
             return this;
         }
 
-        public Builder setMaxPoolSize(int maxPoolSize){
-            if(maxPoolSize < 1){
-                throw new IllegalArgumentException("maxPoolSize " + maxPoolSize);
+        public Builder setMaxSize(int maxSize){
+            if(maxSize < 1){
+                throw new IllegalArgumentException("maxSize " + maxSize);
             }
-            pool.maxPoolSize = maxPoolSize;
+            pool.maxSize = maxSize;
             return this;
         }
 
@@ -323,8 +332,8 @@ public class PullChannelPool implements Closeable {
         }
 
         public PullChannelPool build(){
-            log.info("{}: Started - maxPoolSize = {}, waitTime = {}ms",
-                    pool.name, pool.maxPoolSize, pool.waitTime);
+            log.info("{}: Started - maxSize = {}, waitTime = {}ms",
+                    pool.name, pool.maxSize, pool.waitTime);
             return pool;
         }
 

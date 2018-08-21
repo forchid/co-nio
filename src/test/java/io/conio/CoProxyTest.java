@@ -64,17 +64,15 @@ public class CoProxyTest {
         }
 
         log.info("Start factorial proxy server");
-        final PullChannelPool chanPool = PullChannelPool.newBuilder()
-                //.setMaxPoolSize(1)
-                .build();
         final CoGroup proxyGroup = CoGroup.newBuilder()
                 .setHost(PROXY_HOST)
                 .setPort(PROXY_PORT)
                 .setName("proxyGroup")
+                .enablePullChannelPool()
                 .channelInitializer((channel, sside) -> {
                     if(sside) {
                         final PushCoChannel chan = (PushCoChannel)channel;
-                        chan.handler(new FactorialProxyHandler(backends, chanPool));
+                        chan.handler(new FactorialProxyHandler(backends));
                     }
                 })
                 .build();
@@ -112,7 +110,6 @@ public class CoProxyTest {
         clientGroup.shutdown();
         clientGroup.await();
 
-        chanPool.close();
         proxyGroup.shutdown();
         proxyGroup.await();
 
