@@ -6,6 +6,6 @@ A simple nio framework based on coroutines
 2. Push and pull mode coroutine, coroutine channel.
 3. Coroutine future for supporting async programming style.
 4. Computation task execution in a worker thread pool.
-5. Using offbynull's high performance coroutines library.
+5. Using offbynull's high performance [coroutines](https://github.com/offbynull/coroutines) library.
 6. Coroutine and coroutine channel timer.
 7. Pull coroutine channel connection pool.
