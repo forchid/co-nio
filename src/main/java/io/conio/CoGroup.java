@@ -316,6 +316,16 @@ public class CoGroup {
             this.coQueue = new LinkedTransferQueue<>();
         }
 
+        protected void initialize(){
+            final PullChannelPool pool = coGroup.getPullChannelPool();
+            if(pool != null && pool.getHeartbeatCodec() != null){
+                log.info("{}: Start {} heartbeat task", name, pool.getName());
+                final long period = pool.getHeartbeatInterval() * 1000L;
+                final ScheduledCoFuture<?> f = coGroup.schedule(pool, period, period);
+                pool.setHeartbeatFuture(f);
+            }
+        }
+
         @Override
         public abstract void run();
 
@@ -603,6 +613,8 @@ public class CoGroup {
         @Override
         public void run(){
             try{
+                initialize();
+
                 if(coGroup.host != null){
                     log.info("{}: Started on {}:{}", name, coGroup.host, coGroup.port);
                 }else{
@@ -1158,6 +1170,8 @@ public class CoGroup {
         @Override
         public void run() {
             try{
+                initialize();
+
                 if(serverChan != null){
                     coAcceptor = new AioCoAcceptor(this, serverChan);
                     coAcceptor.start();
@@ -1769,20 +1783,32 @@ public class CoGroup {
         }
 
         public Builder setPullChannelPoolName(String poolName){
-            initPullChannelPoolBuilder();
+            enablePullChannelPool();
             pullChannelPoolBuilder.setName(poolName);
             return this;
         }
 
         public Builder setPullChannelPoolMaxSize(int maxSize){
-            initPullChannelPoolBuilder();
+            enablePullChannelPool();
             pullChannelPoolBuilder.setMaxSize(maxSize);
             return this;
         }
 
-        public Builder setPullChannelPoolWaitTime(long waitTime){
-            initPullChannelPoolBuilder();
-            pullChannelPoolBuilder.setWaitTime(waitTime);
+        public Builder setPullChannelPoolMaxWait(long maxWait){
+            enablePullChannelPool();
+            pullChannelPoolBuilder.setMaxWait(maxWait);
+            return this;
+        }
+
+        public Builder setPullChannelPoolHeartbeatInterval(long heartbeatInterval){
+            enablePullChannelPool();
+            pullChannelPoolBuilder.setHeartbeatInterval(heartbeatInterval);
+            return this;
+        }
+
+        public Builder setPullChannelPoolHeartbeatCodec(PullChannelPool.HeartbeatCodec heartbeatCodec){
+            enablePullChannelPool();
+            pullChannelPoolBuilder.setHeartbeatCodec(heartbeatCodec);
             return this;
         }
 

@@ -17,6 +17,8 @@
 package io.conio;
 
 import com.offbynull.coroutines.user.Continuation;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.EOFException;
 import java.io.IOException;
@@ -24,89 +26,123 @@ import java.math.BigInteger;
 import java.nio.ByteBuffer;
 
 public class FactorialCodec {
+    final static Logger log = LoggerFactory.getLogger(FactorialCodec.class);
 
-   public final static String encoding = "ascii";
+    public final static String encoding = ChannelCodec.ASCII;
 
-   public final static FactorialRequest decodeRequest(Continuation co, ByteBuffer buffer)throws IOException {
-       final CoChannel channel = (CoChannel)co.getContext();
-       buffer.clear();
+    public final static FactorialRequest decodeRequest(Continuation co, ByteBuffer buffer)throws IOException {
+        final CoChannel channel = (CoChannel)co.getContext();
 
-       // Receive: From(4), To(4)
-       for(;buffer.position() < 8;){
-           final int i = channel.read(co, buffer);
-           if(i == -1){
-               throw new EOFException("Peer closed");
-           }
-       }
-       buffer.flip();
-       final int from = buffer.getInt();
-       final int to   = buffer.getInt();
-       buffer.clear();
+        // ping?
+        buffer.clear();
+        buffer.limit(1);
+        int n = channel.read(co, buffer);
+        if(n == -1){
+            throw new EOFException("Peer closed");
+        }
+        buffer.flip();
+        if(CoProxyHeartbeatCodec.CMD_PING == (buffer.get() & 0xff)){
+            buffer.clear();
+            buffer.limit(4);
+            for(;buffer.position() < 4;){
+                n = channel.read(co, buffer);
+                if(n == -1){
+                    throw new EOFException("Peer closed");
+                }
+            }
+            buffer.flip();
+            final String ping = new String(buffer.array(), 0, 4, ChannelCodec.ASCII);
+            if("ping".equals(ping)){
+                log.info("{}: Receive {}", channel.name(), ping);
+                channel.write(co, ByteBuffer.wrap("pong".getBytes(ChannelCodec.ASCII)));
+                return null;
+            }
+            throw new IOException("Not ping message");
+        }
+        buffer.clear();
 
-       final FactorialRequest request = new FactorialRequest(from, to);
-       request.size = 8;
-       return request;
-   }
+        // Receive: From(4), To(4)
+        for(;buffer.position() < 8;){
+            final int i = channel.read(co, buffer);
+            if(i == -1){
+                throw new EOFException("Peer closed");
+            }
+        }
+        buffer.flip();
+        final int from = buffer.getInt();
+        final int to   = buffer.getInt();
+        buffer.clear();
 
-   public final static int encodeRequest(Continuation co, ByteBuffer buffer,
+        final FactorialRequest request = new FactorialRequest(from, to);
+        request.size = 8;
+        return request;
+    }
+
+    public final static int encodeRequest(Continuation co, ByteBuffer buffer,
                                           FactorialRequest request)throws IOException {
-       final CoChannel channel = (CoChannel)co.getContext();
-       if(channel == null){
-           throw new NullPointerException("channel null");
-       }
-       buffer.clear();
-       // Send: From(4), To(4)
-       buffer.putInt(request.from);
-       buffer.putInt(request.to);
-       buffer.flip();
-       channel.write(co, buffer);
-       buffer.clear();
-       return request.size = 8;
-   }
+        final CoChannel channel = (CoChannel)co.getContext();
+        if(channel == null){
+            throw new NullPointerException("channel null");
+        }
+        // CMD_CALC: 0x01
+        buffer.clear();
+        buffer.put((byte)1);
+        buffer.flip();
+        channel.write(co, buffer);
+        buffer.clear();
 
-   public final static FactorialResponse decodeResponse(Continuation co, ByteBuffer buffer)throws IOException {
-       final CoChannel channel = (CoChannel)co.getContext();
+        // Send: From(4), To(4)
+        buffer.putInt(request.from);
+        buffer.putInt(request.to);
+        buffer.flip();
+        channel.write(co, buffer);
+        buffer.clear();
+        return request.size = 9;
+    }
 
-       // Receive: LEN(4), status, result
-       for(;buffer.position() < 4;){
-           final int i = channel.read(co, buffer);
-           if(i == -1){
-               throw new EOFException("Peer closed");
-           }
-       }
-       buffer.flip();
-       final int len = buffer.getInt();
+    public final static FactorialResponse decodeResponse(Continuation co, ByteBuffer buffer)throws IOException {
+        final CoChannel channel = (CoChannel)co.getContext();
 
-       ByteBuffer buf = buffer.compact();
-       for(;buf.position() < len;){
-           final int i = channel.read(co, buf);
-           if(i == -1){
-               throw new EOFException();
-           }
-           if(buf.remaining() == 0){
-               ByteBuffer b = ByteBuffer.allocate(buf.capacity()<<1);
-               buf.flip();
-               b.put(buf);
-               buf = b;
-           }
-       }
-       buf.flip();
+        // Receive: LEN(4), status, result
+        for(;buffer.position() < 4;){
+            final int i = channel.read(co, buffer);
+            if(i == -1){
+                throw new EOFException("Peer closed");
+            }
+        }
+        buffer.flip();
+        final int len = buffer.getInt();
 
-       final int status = buf.get() & 0xff;
-       final byte[] a = buf.array();
-       final String result = new String(a, 1, buf.limit()-1, encoding);
-       if(status != 0){
-           final FactorialResponse response = new FactorialResponse(result);
-           response.size = len + 4;
-           return response;
-       }
-       final FactorialResponse response = new FactorialResponse(new BigInteger(result));
-       response.size = len + 4;
-       return response;
-   }
+        ByteBuffer buf = buffer.compact();
+        for(;buf.position() < len;){
+            final int i = channel.read(co, buf);
+            if(i == -1){
+                throw new EOFException();
+            }
+            if(buf.remaining() == 0){
+                ByteBuffer b = ByteBuffer.allocate(buf.capacity()<<1);
+                buf.flip();
+                b.put(buf);
+                buf = b;
+            }
+        }
+        buf.flip();
+
+        final int status = buf.get() & 0xff;
+        final byte[] a = buf.array();
+        final String result = new String(a, 1, buf.limit()-1, encoding);
+        if(status != 0){
+            final FactorialResponse response = new FactorialResponse(result);
+            response.size = len + 4;
+            return response;
+        }
+        final FactorialResponse response = new FactorialResponse(new BigInteger(result));
+        response.size = len + 4;
+        return response;
+    }
 
     public final static int encodeResponse(Continuation co, ByteBuffer buffer,
-                                            FactorialResponse response)throws IOException {
+                                           FactorialResponse response)throws IOException {
         final CoChannel channel = (CoChannel)co.getContext();
 
         final ByteBuffer result;

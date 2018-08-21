@@ -20,6 +20,7 @@ import com.offbynull.coroutines.user.Continuation;
 import io.conio.util.CoFuture;
 import io.conio.util.IoUtils;
 import io.conio.util.RtUtils;
+import io.conio.util.ScheduledCoFuture;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -28,6 +29,7 @@ import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.nio.ByteBuffer;
 import java.util.*;
+import java.util.concurrent.ExecutionException;
 
 /**
  * <p>
@@ -36,13 +38,19 @@ import java.util.*;
  * @author little-pan
  * @since 2018-08-19
  */
-public class PullChannelPool implements Closeable {
+public class PullChannelPool implements CoHandler, Closeable {
     final static Logger log = LoggerFactory.getLogger(PullChannelPool.class);
 
     private String name = "PullChanPool";
     private int maxSize = (RtUtils.PROCESSORS << 2) + 1;
-    private long waitTime = 30000L;
+    private long maxWait = 30000L;         // ms
+    private long heartbeatInterval = 30L;  // unit s, no heartbeat when this value < 1
     private boolean closed;
+
+    // Heartbeat properties
+    private ScheduledCoFuture<?> heartbeatFuture;
+    private HeartbeatCodec heartbeatCodec;
+    private boolean heartbeating;
 
     private Map<InetSocketAddress, SaPool> saPools = new HashMap<>();
 
@@ -60,15 +68,23 @@ public class PullChannelPool implements Closeable {
         return maxSize;
     }
 
-    public long getWaitTime(){
-        return waitTime;
+    public long getMaxWait(){
+        return maxWait;
+    }
+
+    public long getHeartbeatInterval(){
+        return heartbeatInterval;
+    }
+
+    public HeartbeatCodec getHeartbeatCodec(){
+        return heartbeatCodec;
     }
 
     public boolean isOpen(){
         return (!closed);
     }
 
-    public CoFuture<PullCoChannel> getChannel(Continuation co, InetSocketAddress sa, PriotityKey priotityKey){
+    public CoFuture<PullCoChannel> getChannel(Continuation co, InetSocketAddress sa, PriorityKey priorityKey){
         if(!group.inGroup()){
             throw new IllegalStateException("Current thread not in CoGroup " + group.getName());
         }
@@ -80,12 +96,114 @@ public class PullChannelPool implements Closeable {
             saPool = new SaPool(this, sa);
             saPools.put(sa, saPool);
         }
-        final CoFuture<PullCoChannel> future = saPool.getChannel(co, priotityKey);
+        final CoFuture<PullCoChannel> future = saPool.getChannel(co, priorityKey);
         return future;
     }
 
     public CoFuture<PullCoChannel> getChannel(Continuation co, InetSocketAddress sa){
-        return getChannel(co, sa, PriotityKey.SINGLE);
+        return getChannel(co, sa, PriorityKey.SINGLE);
+    }
+
+    /**
+     * <p>
+     *    Heartbeat entrance.
+     * </p>
+     * @param co the continuation
+     * @since 0.0.1-2018-08-21
+     * @auhtor little-pan
+     */
+    @Override
+    public void handle(Continuation co) {
+        if(!isOpen()){
+            final ScheduledCoFuture<?> f = heartbeatFuture;
+            if(f != null){
+                log.info("{}: Closed - cancel heartbeat", name);
+                f.cancel(true);
+                heartbeatFuture = null;
+            }
+            return;
+        }
+        final PushCoRunner coRunner = (PushCoRunner)co.getContext();
+        if(heartbeating){
+            log.warn("{}: {} - The last heartbeat pending", name, coRunner.name);
+            return;
+        }
+
+        try {
+            heartbeating = true;
+            log.debug("{}: {} - Heartbeat begin", name, coRunner.name);
+            heartbeat(co);
+        }catch (final Exception e){
+            log.warn(name + ": " + coRunner.name + " - Heartbeat error", e);
+        }finally {
+            heartbeating = false;
+            log.debug("{}: {} - Heartbeat end", name, coRunner.name);
+        }
+    }
+
+    private void heartbeat(Continuation co) {
+        final long currentTime = System.currentTimeMillis();
+        final Set<InetSocketAddress> addresses = new HashSet<>(saPools.keySet());
+        final Set<SaPool.PooledChannel> beated = new HashSet<>();
+        log.debug("{}: addresses = {}", name, addresses);
+
+        for(final InetSocketAddress sa : addresses){
+            final SaPool saPool = saPools.get(sa);
+            if(saPool == null){
+                continue;
+            }
+            if(saPool.poolSize == 0){
+                // Remove no any channel pool for economical memory usage
+                saPools.remove(sa);
+                continue;
+            }
+            for(;;){
+                SaPool.PooledChannel pooled = null;
+                boolean failed = true;
+                try {
+                    pooled = saPool.getChannel(beated, currentTime);
+                    if (pooled == null) {
+                        failed = false;
+                        break;
+                    }
+                    final CoFuture<ByteBuffer> f = doHeartbeat(pooled);
+                    f.get(co);
+                    pooled.close(); // Release it after test
+                    failed = false;
+                }catch (final ExecutionException e){
+                    Throwable cause = e.getCause();
+                    if(cause instanceof RuntimeException && cause.getCause() != null){
+                        cause = cause.getCause();
+                    }
+                    log.warn(name + ": Do heartbeat error", cause);
+                    continue;
+                }finally {
+                    if(failed){
+                        IoUtils.close(pooled);
+                        for(final SaPool.PooledChannel chan: beated){
+                            IoUtils.close(chan);
+                        }
+                    }
+                }
+                beated.add(pooled);
+            }
+            beated.clear();
+        }
+    }
+
+    private CoFuture<ByteBuffer> doHeartbeat(SaPool.PooledChannel pooled) {
+        final HeartbeatCodec codec = heartbeatCodec;
+        return pooled.execute((c) -> {
+            try {
+                return codec.heartbeat(c);
+            }catch(final IOException e){
+                throw new RuntimeException(e);
+            }
+        });
+    }
+
+    final void setHeartbeatFuture(ScheduledCoFuture<?> heartbeatFuture){
+        this.heartbeatFuture = heartbeatFuture;
     }
 
     @Override
@@ -117,7 +235,7 @@ public class PullChannelPool implements Closeable {
         private final PullChannelPool parentPool;
         private final InetSocketAddress address;
 
-        private Map<PriotityKey, Queue<PooledChannel>> pool = new HashMap<>();
+        private Map<PriorityKey, Queue<PooledChannel>> pool = new HashMap<>();
         private int poolSize;
         private Queue<CoRunner> waiters = new LinkedList<>();
 
@@ -126,11 +244,11 @@ public class PullChannelPool implements Closeable {
             this.address = address;
         }
 
-        public CoFuture<PullCoChannel> getChannel(Continuation co, PriotityKey priotityKey){
-            Queue<PooledChannel> queue = pool.get(priotityKey);
+        public CoFuture<PullCoChannel> getChannel(Continuation co, PriorityKey priorityKey){
+            Queue<PooledChannel> queue = pool.get(priorityKey);
             if(queue == null){
                 queue = new LinkedList<>();
-                pool.put(priotityKey, queue);
+                pool.put(priorityKey, queue);
             }
 
             final CoRunner waiter = (CoRunner)co.getContext();
@@ -146,10 +264,10 @@ public class PullChannelPool implements Closeable {
                     return newCoFuture(waiter, chan);
                 }
 
-                final Iterator<Map.Entry<PriotityKey, Queue<PooledChannel>>> i = pool.entrySet().iterator();
+                final Iterator<Map.Entry<PriorityKey, Queue<PooledChannel>>> i = pool.entrySet().iterator();
                 for(;i.hasNext();){
-                    final Map.Entry<PriotityKey, Queue<PooledChannel>> e = i.next();
-                    if(e.getKey().equals(priotityKey)){
+                    final Map.Entry<PriorityKey, Queue<PooledChannel>> e = i.next();
+                    if(e.getKey().equals(priorityKey)){
                         continue;
                     }
                     final PullCoChannel c = e.getValue().poll();
@@ -186,7 +304,7 @@ public class PullChannelPool implements Closeable {
                             log.warn("Connection exception", cause);
                             return;
                         }
-                        final PooledChannel poChan = new PooledChannel(self, priotityKey, coChan);
+                        final PooledChannel poChan = new PooledChannel(self, priorityKey, coChan);
                         chanQueue.offer(poChan);
                         future.setValue(poChan);
                         log.debug("{}: {} connection success - poolSize = {}", address,  waiter, poolSize);
@@ -224,11 +342,39 @@ public class PullChannelPool implements Closeable {
             return future;
         }
 
+        PooledChannel getChannel(final Set<PooledChannel> beated, final long currentTime){
+            final Iterator<Map.Entry<PriorityKey, Queue<PooledChannel>>> i = pool.entrySet().iterator();
+            final long bhi = parentPool.heartbeatInterval * 1000L;
+            final Queue<PooledChannel> backed = new LinkedList<>();
+
+            for(; i.hasNext(); ){
+                final Map.Entry<PriorityKey, Queue<PooledChannel>> e = i.next();
+                final Queue<PooledChannel> queue = e.getValue();
+                for(;;){
+                    final PooledChannel c = queue.poll();
+                    if(c == null){
+                        break;
+                    }
+                    if(beated.contains(c) || currentTime - c.lastAccessTime < bhi){
+                        backed.offer(c);
+                        continue;
+                    }
+                    queue.addAll(backed);
+                    backed.clear();
+                    log.debug("{}: heartbeat acquires channel {} from this pool", address, c.name);
+                    return c;
+                }
+                queue.addAll(backed);
+                backed.clear();
+            }
+            return null;
+        }
+
         @Override
         public void close(){
-            final Iterator<Map.Entry<PriotityKey, Queue<PooledChannel>>> i = pool.entrySet().iterator();
+            final Iterator<Map.Entry<PriorityKey, Queue<PooledChannel>>> i = pool.entrySet().iterator();
             for(;i.hasNext(); i.remove()){
-                final Map.Entry<PriotityKey, Queue<PooledChannel>> e = i.next();
+                final Map.Entry<PriorityKey, Queue<PooledChannel>> e = i.next();
                 for(;;){
                     final PooledChannel pooled = e.getValue().poll();
                     if(pooled == null){
@@ -237,37 +383,71 @@ public class PullChannelPool implements Closeable {
                     close(pooled.wrappedChan());
                 }
             }
+            log.info("{}: {} closed - pollSize = {}", parentPool.name, address, poolSize);
         }
 
        final void close(CoChannel wrappedChan){
+           if(!wrappedChan.isOpen()){
+               return;
+           }
            wrappedChan.close();
-            --poolSize;
-            final CoRunner waiter = waiters.poll();
-            if(waiter != null){
-                waiter.resume();
-            }
+           --poolSize;
+           final CoRunner waiter = waiters.poll();
+           if(waiter != null){
+               waiter.resume();
+           }
         }
 
         static class PooledChannel extends PullCoChannel {
             final static Logger log = LoggerFactory.getLogger(PooledChannel.class);
 
             final SaPool saPool;
-            final PriotityKey priotityKey;
+            final PriorityKey priorityKey;
 
-            public PooledChannel(SaPool saPool, PriotityKey priotityKey, PullCoChannel chan){
+            long lastAccessTime;
+            private boolean ioe;
+
+            public PooledChannel(SaPool saPool, PriorityKey priorityKey, PullCoChannel chan){
                 super(chan);
                 this.saPool = saPool;
-                this.priotityKey = priotityKey;
+                this.priorityKey = priorityKey;
             }
 
             @Override
             public int read(Continuation co, ByteBuffer dst) throws IOException {
-                return wrappedChan().read(co, dst);
+                boolean failed = true;
+                try{
+                    final int i = wrappedChan().read(co, dst);
+                    if(i != 0){
+                        this.lastAccessTime = System.currentTimeMillis();
+                        if(i == -1){
+                            return i;
+                        }
+                    }
+                    failed = false;
+                    return i;
+                }finally {
+                    if(failed){
+                        this.ioe = true;
+                    }
+                }
             }
 
             @Override
             public int write(Continuation co, ByteBuffer src) throws IOException {
-                return wrappedChan().write(co, src);
+                boolean failed = true;
+                try{
+                    final int n = wrappedChan().write(co, src);
+                    if(n > 0){
+                        this.lastAccessTime = System.currentTimeMillis();
+                    }
+                    failed = false;
+                    return n;
+                } finally {
+                    if(failed){
+                        this.ioe = true;
+                    }
+                }
             }
 
             @Override
@@ -277,11 +457,11 @@ public class PullChannelPool implements Closeable {
 
             @Override
             public void close() {
-                if(!saPool.parentPool.isOpen()){
+                if(this.ioe || (!saPool.parentPool.isOpen())){
                     saPool.close(wrappedChan());
                     return;
                 }
-                final Queue<PooledChannel> subPool = saPool.pool.get(priotityKey);
+                final Queue<PooledChannel> subPool = saPool.pool.get(priorityKey);
                 subPool.offer(this);
                 log.debug("{}: release channel {} into this pool", saPool.address, name);
                 final CoRunner waiter = saPool.waiters.poll();
@@ -294,13 +474,41 @@ public class PullChannelPool implements Closeable {
                 return (PullCoChannel)wrapped;
             }
 
+            final long getLastAccessTime(){
+                return lastAccessTime;
+            }
+
         }// PooledChannel
 
     }// SaPool
 
-    public interface PriotityKey {
-        PriotityKey SINGLE = new PriotityKey() {};
-    }// PriotityKey
+    public interface PriorityKey {
+        PriorityKey SINGLE = new PriorityKey() {};
+    }// PriorityKey
+
+    public static abstract class HeartbeatCodec implements ChannelCodec<ByteBuffer, ByteBuffer> {
+        protected ByteBuffer buffer;
+
+        protected HeartbeatCodec(ByteBuffer buffer){
+            this.buffer = buffer;
+        }
+
+        public ByteBuffer heartbeat(Continuation co) throws IOException {
+            encode(co, buffer, message());
+            return decode(co, buffer);
+        }
+
+        @Override
+        public void encode(Continuation co, ByteBuffer buffer, ByteBuffer message)throws IOException {
+            final PullCoChannel chan = (PullCoChannel)co.getContext();
+            for(; message.hasRemaining(); ){
+                chan.write(co, message);
+            }
+        }
+
+        protected abstract ByteBuffer message();
+
+    }// HeartbeatCodec
 
     static class Builder {
 
@@ -323,17 +531,27 @@ public class PullChannelPool implements Closeable {
             return this;
         }
 
-        public Builder setWaitTime(long waitTime){
-            if(waitTime < 1){
-                throw new IllegalArgumentException("waitTime " + waitTime);
+        public Builder setMaxWait(long maxWait){
+            if(maxWait < 1){
+                throw new IllegalArgumentException("maxWait " + maxWait);
             }
-            pool.waitTime = waitTime;
+            pool.maxWait = maxWait;
+            return this;
+        }
+
+        public Builder setHeartbeatInterval(long heartbeatInterval){
+            pool.heartbeatInterval = heartbeatInterval;
+            return this;
+        }
+
+        public Builder setHeartbeatCodec(HeartbeatCodec heartbeatCodec){
+            pool.heartbeatCodec = heartbeatCodec;
             return this;
         }
 
         public PullChannelPool build(){
-            log.info("{}: Started - maxSize = {}, waitTime = {}ms",
-                    pool.name, pool.maxSize, pool.waitTime);
+            log.info("{}: Started - maxSize = {}, maxWait = {}ms, heartbeatInterval = {}s",
+                    pool.name, pool.maxSize, pool.maxWait, pool.heartbeatInterval);
             return pool;
         }
 

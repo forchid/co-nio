@@ -62,6 +62,9 @@ public class FactorialServerHandler implements CoHandler {
         final FactorialRequest request;
         try {
             request = FactorialCodec.decodeRequest(co, buffer);
+            if(request == null){
+                return false;
+            }
         }catch(final EOFException e){
             return true;
         }
