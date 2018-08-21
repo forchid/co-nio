@@ -57,7 +57,10 @@ public class CoGroup {
 
     private ChannelInitializer initializer = ChannelInitializer.NOOP;
     private int workerThreads = RtUtils.PROCESSORS;
-    private ScheduledExecutorService workerThreadPool;
+    private ExecutorService workerThreadPool;
+    // Timer uses an independent executor service for unaffected timer task
+    // @since 2018-08-21 little-pan
+    private ScheduledExecutorService timerService;
 
     private PullChannelPool pullChannelPool;
 
@@ -360,7 +363,7 @@ public class CoGroup {
         ScheduledCoFuture<?> schedule(CoHandler handler, final long delay){
             final CoGroup group = coGroup;
             final ScheduledCoFutureImpl<?> coFuture = new ScheduledCoFutureImpl<>(group, handler);
-            final ScheduledExecutorService executors = group.workerThreadPool;
+            final ScheduledExecutorService executors = group.timerService;
             final ScheduledFuture<?> schedFuture = executors.schedule(() -> {
                 if(group.isShutdown()){
                     return;
@@ -374,7 +377,7 @@ public class CoGroup {
         ScheduledCoFuture<?> schedule(CoHandler handler, long initialDelay, long period){
             final CoGroup group = coGroup;
             final ScheduledCoFutureImpl<?> coFuture = new ScheduledCoFutureImpl<>(group, handler);
-            final ScheduledExecutorService executors = group.workerThreadPool;
+            final ScheduledExecutorService executors = group.timerService;
             final ScheduledFuture<?> schedFuture = executors.scheduleAtFixedRate(() -> {
                 if(group.isShutdown()){
                     return;
@@ -401,6 +404,7 @@ public class CoGroup {
             coGroup.stopped = true;
             coGroup.ioGroup = null;
             coQueue.clear();
+            coGroup.timerService.shutdown();
             coGroup.closePullChannelPool();
             coGroup.workerThreadPool.shutdown();
             log.info("{}: Stopped",  name);
@@ -641,9 +645,11 @@ public class CoGroup {
                         log.debug("{}: shutdown", name);
                         // 3.1 not accept any new connection
                         IoUtils.close(serverChan);
-                        // 3.2 close pull channel pool
+                        // 3.2 shutdown timer service
+                        coGroup.timerService.shutdown();
+                        // 3.3 close pull channel pool
                         coGroup.closePullChannelPool();
-                        // 3.3 check other connections closed
+                        // 3.4 check other connections closed
                         final Set<SelectionKey> keys = selector.keys();
                         final int keySize = keys.size();
                         if(keySize == 0){
@@ -1168,9 +1174,11 @@ public class CoGroup {
                     if(coGroup.isShutdown()){
                         // 1. close acceptor
                         stopAcceptor();
-                        // 2. close pull channel pool
+                        // 2. shutdown timer service
+                        coGroup.timerService.shutdown();
+                        // 3. close pull channel pool
                         coGroup.closePullChannelPool();
-                        // 3. handle remaining CoTasks
+                        // 4. handle remaining CoTasks
                         for(;;){
                             final CoTask h = coQueue.poll();
                             if(h == null){
@@ -1802,16 +1810,33 @@ public class CoGroup {
                 group.pullChannelPool = pullChannelPoolBuilder.build();
             }
 
+            log.info("{}: Create the worker thread pool(workerThreads {})",  group.name, workerThreads);
             group.workerThreadPool = Executors.newScheduledThreadPool(workerThreads, new ThreadFactory() {
                 final AtomicInteger counter = new AtomicInteger(0);
                 @Override
                 public Thread newThread(Runnable r) {
-                    final String name = String.format("%s-worker-%d", group.getName(), counter.incrementAndGet());
+                    final String name = String.format("%s-worker-%d",  group.name, counter.incrementAndGet());
                     final Thread t = new Thread(r, name);
                     t.setDaemon(group.isDaemon());
                     return t;
                 }
             });
+
+            boolean failed = true;
+            try{
+                log.info("{}: Create the timer service", group.name);
+                group.timerService = Executors.newSingleThreadScheduledExecutor((r) -> {
+                    final Thread t = new Thread(r,  group.name+"-timer");
+                    t.setDaemon(group.isDaemon());
+                    return t;
+                });
+                failed = false;
+            }finally {
+                if(failed){
+                    group.workerThreadPool.shutdown();
+                }
+            }
+
             return group;
         }
 
