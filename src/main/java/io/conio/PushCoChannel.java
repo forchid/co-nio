@@ -16,8 +16,11 @@
  */
 package io.conio;
 
+import io.conio.util.IoUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import java.nio.ByteBuffer;
 
 /**
  * <p>
@@ -29,8 +32,38 @@ import org.slf4j.LoggerFactory;
 public abstract class PushCoChannel extends PushCoRunner implements CoChannel {
     final static Logger log = LoggerFactory.getLogger(PushCoChannel.class);
 
+    private ByteBuffer inBuffer, outBuffer;
+
     protected PushCoChannel(final int id, CoGroup group){
         super(id, "pushChan-co-"+id, group);
+    }
+
+    @Override
+    public ByteBuffer inBuffer(){
+        if(this.inBuffer == null){
+            inBuffer(allocate(group.getBufferSize()));
+        }
+        return this.inBuffer;
+    }
+
+    @Override
+    public PushCoChannel inBuffer(ByteBuffer buffer){
+        this.inBuffer = IoUtils.copyToInBuffer(this.inBuffer, buffer);
+        return this;
+    }
+
+    @Override
+    public ByteBuffer outBuffer(){
+        if(this.outBuffer == null){
+            outBuffer(allocate(group.getBufferSize()));
+        }
+        return this.outBuffer;
+    }
+
+    @Override
+    public PushCoChannel outBuffer(ByteBuffer buffer){
+        this.outBuffer = IoUtils.copyToOutBuffer(this.outBuffer, buffer);
+        return this;
     }
 
 }

@@ -161,7 +161,7 @@ public class PullChannelPool implements CoHandler, Closeable {
                 SaPool.PooledChannel pooled = null;
                 boolean failed = true;
                 try {
-                    pooled = saPool.getChannel(beated, currentTime);
+                    pooled = saPool.getChannel(co, beated, currentTime);
                     if (pooled == null) {
                         failed = false;
                         break;
@@ -191,13 +191,18 @@ public class PullChannelPool implements CoHandler, Closeable {
         }
     }
 
-    private CoFuture<ByteBuffer> doHeartbeat(SaPool.PooledChannel pooled) {
+    private CoFuture<ByteBuffer> doHeartbeat(final SaPool.PooledChannel pooled) {
         final HeartbeatCodec codec = heartbeatCodec;
         return pooled.execute((c) -> {
+            final Object oldCtx = c.getContext();
             try {
-                return codec.heartbeat(c);
-            }catch(final IOException e){
+                // Switch wrapped to pooled
+                c.setContext(pooled);
+                return codec.ping(c);
+            } catch(final IOException e){
                 throw new RuntimeException(e);
+            } finally {
+                c.setContext(oldCtx);
             }
         });
     }
@@ -259,7 +264,7 @@ public class PullChannelPool implements CoHandler, Closeable {
                 if(!parentPool.isOpen()){
                     throw new IllegalStateException(parentPool.name+" closed");
                 }
-                final PullCoChannel chan = queue.poll();
+                final PooledChannel chan = queue.poll();
                 if(chan != null){
                     return newCoFuture(waiter, chan);
                 }
@@ -270,7 +275,7 @@ public class PullChannelPool implements CoHandler, Closeable {
                     if(e.getKey().equals(priorityKey)){
                         continue;
                     }
-                    final PullCoChannel c = e.getValue().poll();
+                    final PooledChannel c = e.getValue().poll();
                     if(c == null){
                         continue;
                     }
@@ -305,8 +310,8 @@ public class PullChannelPool implements CoHandler, Closeable {
                             return;
                         }
                         final PooledChannel poChan = new PooledChannel(self, priorityKey, coChan);
-                        chanQueue.offer(poChan);
                         future.setValue(poChan);
+                        poChan.free = false;
                         log.debug("{}: {} connection success - poolSize = {}", address,  waiter, poolSize);
                         failed = false;
                     }finally {
@@ -335,33 +340,41 @@ public class PullChannelPool implements CoHandler, Closeable {
             }
         }
 
-        CoFuture<PullCoChannel> newCoFuture(CoRunner waiter, PullCoChannel chan){
+        CoFuture<PullCoChannel> newCoFuture(CoRunner waiter, PooledChannel chan){
             CoGroup.CoFutureImpl<PullCoChannel> future = new CoGroup.CoFutureImpl<>(waiter);
-            future.setValue(chan).run();
+            future.setValue(chan);
+            chan.free = false;
+            future.run();
             log.debug("{}: {} acquires channel {} from this pool", address, waiter, chan.name);
             return future;
         }
 
-        PooledChannel getChannel(final Set<PooledChannel> beated, final long currentTime){
+        PooledChannel getChannel(Continuation co, final Set<PooledChannel> beated, final long currentTime){
             final Iterator<Map.Entry<PriorityKey, Queue<PooledChannel>>> i = pool.entrySet().iterator();
             final long bhi = parentPool.heartbeatInterval * 1000L;
             final Queue<PooledChannel> backed = new LinkedList<>();
+            final CoRunner coRunner = (CoRunner)co.getContext();
 
             for(; i.hasNext(); ){
                 final Map.Entry<PriorityKey, Queue<PooledChannel>> e = i.next();
                 final Queue<PooledChannel> queue = e.getValue();
                 for(;;){
                     final PooledChannel c = queue.poll();
-                    if(c == null){
+                    if(c == null || !c.wrappedChan().isOpen()){
+                        if(c != null){
+                            c.free = false;
+                            c.close();
+                        }
                         break;
                     }
-                    if(beated.contains(c) || currentTime - c.lastAccessTime < bhi){
+                    if(beated.contains(c) || (currentTime - c.lastAccessTime) < bhi){
                         backed.offer(c);
                         continue;
                     }
                     queue.addAll(backed);
                     backed.clear();
-                    log.debug("{}: heartbeat acquires channel {} from this pool", address, c.name);
+                    c.free = false;
+                    log.debug("{}: {} heartbeat acquires channel {} from this pool", address, coRunner.name, c.name);
                     return c;
                 }
                 queue.addAll(backed);
@@ -380,22 +393,11 @@ public class PullChannelPool implements CoHandler, Closeable {
                     if(pooled == null){
                         break;
                     }
-                    close(pooled.wrappedChan());
+                    pooled.free = false;
+                    pooled.close();
                 }
             }
             log.info("{}: {} closed - pollSize = {}", parentPool.name, address, poolSize);
-        }
-
-       final void close(CoChannel wrappedChan){
-           if(!wrappedChan.isOpen()){
-               return;
-           }
-           wrappedChan.close();
-           --poolSize;
-           final CoRunner waiter = waiters.poll();
-           if(waiter != null){
-               waiter.resume();
-           }
         }
 
         static class PooledChannel extends PullCoChannel {
@@ -403,6 +405,8 @@ public class PullChannelPool implements CoHandler, Closeable {
 
             final SaPool saPool;
             final PriorityKey priorityKey;
+            private boolean open;
+            boolean free;
 
             long lastAccessTime;
             private boolean ioe;
@@ -411,13 +415,19 @@ public class PullChannelPool implements CoHandler, Closeable {
                 super(chan);
                 this.saPool = saPool;
                 this.priorityKey = priorityKey;
+                this.open = true;
+                this.free = true;
             }
 
             @Override
             public int read(Continuation co, ByteBuffer dst) throws IOException {
+                final CoChannel wrapped = wrappedChan();
+                final Object oldCtx = co.getContext();
                 boolean failed = true;
-                try{
-                    final int i = wrappedChan().read(co, dst);
+                try {
+                    // Switch pooled to wrapped
+                    co.setContext(wrapped);
+                    final int i = wrapped.read(co, dst);
                     if(i != 0){
                         this.lastAccessTime = System.currentTimeMillis();
                         if(i == -1){
@@ -426,7 +436,8 @@ public class PullChannelPool implements CoHandler, Closeable {
                     }
                     failed = false;
                     return i;
-                }finally {
+                } finally {
+                    co.setContext(oldCtx);
                     if(failed){
                         this.ioe = true;
                     }
@@ -435,15 +446,19 @@ public class PullChannelPool implements CoHandler, Closeable {
 
             @Override
             public int write(Continuation co, ByteBuffer src) throws IOException {
+                final CoChannel wrapped = wrappedChan();
+                final Object oldCtx = co.getContext();
                 boolean failed = true;
                 try{
-                    final int n = wrappedChan().write(co, src);
+                    co.setContext(wrapped);
+                    final int n = wrapped.write(co, src);
                     if(n > 0){
                         this.lastAccessTime = System.currentTimeMillis();
                     }
                     failed = false;
                     return n;
                 } finally {
+                    co.setContext(oldCtx);
                     if(failed){
                         this.ioe = true;
                     }
@@ -451,31 +466,64 @@ public class PullChannelPool implements CoHandler, Closeable {
             }
 
             @Override
+            public ByteBuffer inBuffer() {
+                return wrappedChan().inBuffer();
+            }
+
+            @Override
+            public PullCoChannel inBuffer(ByteBuffer buffer) {
+                return wrappedChan().inBuffer(buffer);
+            }
+
+            @Override
+            public ByteBuffer outBuffer() {
+                return wrappedChan().outBuffer();
+            }
+
+            @Override
+            public PullCoChannel outBuffer(ByteBuffer buffer) {
+                return wrappedChan().outBuffer(buffer);
+            }
+
+            @Override
             public boolean isOpen() {
-                return wrappedChan().isOpen();
+                return open;
             }
 
             @Override
             public void close() {
-                if(this.ioe || (!saPool.parentPool.isOpen())){
-                    saPool.close(wrappedChan());
+                if(!isOpen() || isFree()){
                     return;
                 }
-                final Queue<PooledChannel> subPool = saPool.pool.get(priorityKey);
-                subPool.offer(this);
-                log.debug("{}: release channel {} into this pool", saPool.address, name);
-                final CoRunner waiter = saPool.waiters.poll();
-                if(waiter != null){
-                    waiter.resume();
+
+                final SaPool saPool = this.saPool;
+                try{
+                    final CoChannel wrappedChan = wrappedChan();
+                    if(this.ioe || !wrappedChan.isOpen() || (!saPool.parentPool.isOpen())){
+                        wrappedChan.close();
+                        this.open = false;
+                        --saPool.poolSize;
+                        return;
+                    }
+
+                    final Queue<PooledChannel> subPool = saPool.pool.get(priorityKey);
+                    subPool.offer(this);
+                    this.free = true;
+                    log.debug("{}: release channel {} into this pool", saPool.address, this.name);
+                } finally {
+                    final CoRunner waiter = saPool.waiters.poll();
+                    if(waiter != null){
+                        waiter.resume();
+                    }
                 }
             }
 
-            CoChannel wrappedChan(){
+            PullCoChannel wrappedChan(){
                 return (PullCoChannel)wrapped;
             }
 
-            final long getLastAccessTime(){
-                return lastAccessTime;
+            boolean isFree(){
+                return free;
             }
 
         }// PooledChannel
@@ -487,26 +535,26 @@ public class PullChannelPool implements CoHandler, Closeable {
     }// PriorityKey
 
     public static abstract class HeartbeatCodec implements ChannelCodec<ByteBuffer, ByteBuffer> {
-        protected ByteBuffer buffer;
 
-        protected HeartbeatCodec(ByteBuffer buffer){
-            this.buffer = buffer;
-        }
+        protected HeartbeatCodec(){}
 
-        public ByteBuffer heartbeat(Continuation co) throws IOException {
-            encode(co, buffer, message());
-            return decode(co, buffer);
-        }
+        /**
+         * <p>
+         *     Ping the peer.
+         * </p>
+         * @param co
+         * @return pong message
+         * @throws IOException if IO or protocol error
+         */
+        public abstract ByteBuffer ping(Continuation co) throws IOException;
 
         @Override
-        public void encode(Continuation co, ByteBuffer buffer, ByteBuffer message)throws IOException {
-            final PullCoChannel chan = (PullCoChannel)co.getContext();
+        public void encode(Continuation co, ByteBuffer message)throws IOException {
+            final CoChannel chan = (CoChannel)co.getContext();
             for(; message.hasRemaining(); ){
                 chan.write(co, message);
             }
         }
-
-        protected abstract ByteBuffer message();
 
     }// HeartbeatCodec
 

@@ -64,12 +64,12 @@ public class CoProxyTest {
         }
 
         log.info("Start factorial proxy server");
-        final PullChannelPool.HeartbeatCodec heartbeatCodec = new CoProxyHeartbeatCodec();
+        final PullChannelPool.HeartbeatCodec heartbeatCodec = new HeartbeatClientCodec();
         final CoGroup proxyGroup = CoGroup.newBuilder()
                 .setHost(PROXY_HOST)
                 .setPort(PROXY_PORT)
                 .setName("proxyGroup")
-                .setPullChannelPoolHeartbeatInterval(3)
+                .setPullChannelPoolHeartbeatInterval(1)
                 .setPullChannelPoolHeartbeatCodec(heartbeatCodec)
                 .channelInitializer((channel, sside) -> {
                     if(sside) {
@@ -86,7 +86,7 @@ public class CoProxyTest {
                 .build();
         clientGroup.start();
         final long ts = System.currentTimeMillis();
-        final int clients = 1;
+        final int clients = 128;
         final FactorialClientHandler clientHandlers[] = new FactorialClientHandler[clients];
         for(int i = 0; i < clients; ++i){
             final FactorialClientHandler handler = new FactorialClientHandler();
@@ -95,7 +95,7 @@ public class CoProxyTest {
         }
 
         log.info("Test bootstrap");
-        BaseTest.sleep(1000L);
+        BaseTest.sleep(15000L);
         final long sec = (System.currentTimeMillis() - ts) / 1000L;
         long bytes = 0L, times = 0L;
         for(final FactorialClientHandler handler: clientHandlers){
@@ -114,7 +114,7 @@ public class CoProxyTest {
 
         if(heartbeatCodec != null){
             log.info("Test heartbeat");
-            BaseTest.sleep(10000L);
+            BaseTest.sleep(15000L);
         }
 
         proxyGroup.shutdown();

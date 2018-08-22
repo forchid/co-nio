@@ -31,8 +31,6 @@ public class FactorialClientHandler extends BaseTest implements CoHandler {
             new BigInteger("3628800"), new BigInteger("39916800"), new BigInteger("479001600")
     };
 
-    protected final ByteBuffer buffer = ByteBuffer.allocate(8192);
-
     public FactorialClientHandler(){
 
     }
@@ -59,10 +57,11 @@ public class FactorialClientHandler extends BaseTest implements CoHandler {
     }
 
     private BigInteger calc(Continuation co, final int from, final int to)throws IOException {
+        final CoChannel chan = (CoChannel)co.getContext();
         final FactorialRequest request = new FactorialRequest(from, to);
-        bytes += FactorialCodec.encodeRequest(co, buffer, request);
+        bytes += FactorialCodec.encodeRequest(co, chan.outBuffer(), request);
 
-        final FactorialResponse response = FactorialCodec.decodeResponse(co, buffer);
+        final FactorialResponse response = FactorialCodec.decodeResponse(co, chan.inBuffer());
         bytes += response.size;
         if(response.error != null){
             throw new IOException(response.error);

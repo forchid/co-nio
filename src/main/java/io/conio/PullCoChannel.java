@@ -16,6 +16,10 @@
  */
 package io.conio;
 
+import io.conio.util.IoUtils;
+
+import java.nio.ByteBuffer;
+
 /**
  * <p>
  * The pull mode CoChannel.
@@ -25,12 +29,42 @@ package io.conio;
  */
 public abstract class PullCoChannel extends PullCoRunner implements CoChannel {
 
+    private ByteBuffer inBuffer, outBuffer;
+
     protected PullCoChannel(final int id, CoGroup group){
         super(id, "pullChan-co-"+id, group);
     }
 
     protected PullCoChannel(PullCoChannel wrapped){
         super(wrapped);
+    }
+
+    @Override
+    public ByteBuffer inBuffer(){
+        if(this.inBuffer == null){
+            inBuffer(allocate(group.getBufferSize()));
+        }
+        return this.inBuffer;
+    }
+
+    @Override
+    public PullCoChannel inBuffer(ByteBuffer buffer){
+        this.inBuffer = IoUtils.copyToInBuffer(this.inBuffer, buffer);
+        return this;
+    }
+
+    @Override
+    public ByteBuffer outBuffer(){
+        if(this.outBuffer == null){
+            outBuffer(allocate(group.getBufferSize()));
+        }
+        return this.outBuffer;
+    }
+
+    @Override
+    public PullCoChannel outBuffer(ByteBuffer buffer){
+        this.outBuffer = IoUtils.copyToOutBuffer(this.outBuffer, buffer);
+        return this;
     }
 
 }

@@ -19,7 +19,6 @@ package io.conio;
 import com.offbynull.coroutines.user.Continuation;
 
 import java.io.IOException;
-import java.nio.ByteBuffer;
 
 /**
  * <p>
@@ -33,8 +32,8 @@ public interface ChannelCodec<I, O> {
     String UTF_8 = "UTF-8";
     String ASCII = "ascii";
 
-    void encode(Continuation co, ByteBuffer buffer, I in) throws IOException;
+    void encode(Continuation co, I in) throws IOException;
 
-    O decode(Continuation co, ByteBuffer buffer)throws IOException;
+    O decode(Continuation co)throws IOException;
 
 }

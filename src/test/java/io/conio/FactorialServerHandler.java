@@ -30,7 +30,6 @@ import java.util.concurrent.ExecutionException;
 
 public class FactorialServerHandler implements CoHandler {
     final static Logger log = LoggerFactory.getLogger(FactorialServerHandler.class);
-    protected final ByteBuffer buffer = ByteBuffer.allocate(8192);
 
     public FactorialServerHandler(){
 
@@ -42,6 +41,24 @@ public class FactorialServerHandler implements CoHandler {
         try{
             final CoGroup group = channel.group();
             for(;!group.isShutdown();){
+                final ByteBuffer ib = channel.inBuffer();
+                ib.clear();
+                int n = channel.read(co, ib);
+                if(n == -1){
+                    break;
+                }
+                ib.flip();
+                if(log.isDebugEnabled()){
+                    log.debug("{}: Receive\n{}", channel.name(), IoUtils.dumphex(ib));
+                }
+
+                final byte cmd = ib.get();
+                ib.compact();
+                if(HeartbeatClientCodec.CMD_PING == cmd){
+                    new HeartbeatServerCodec().pong(co);
+                    continue;
+                }
+
                 final boolean exit = calc(co);
                 if(exit){
                     break;
@@ -59,12 +76,17 @@ public class FactorialServerHandler implements CoHandler {
     }
 
     protected boolean calc(Continuation co)throws IOException {
+        final CoChannel channel = (CoChannel)co.getContext();
+        final ByteBuffer ib = channel.inBuffer();
+        final ByteBuffer ob = channel.outBuffer();
+
         final FactorialRequest request;
         try {
-            request = FactorialCodec.decodeRequest(co, buffer);
+            request = FactorialCodec.decodeRequest(co, ib);
             if(request == null){
                 return false;
             }
+            log.debug("{}: Calc request {}", channel.name(), request);
         }catch(final EOFException e){
             return true;
         }
@@ -74,12 +96,12 @@ public class FactorialServerHandler implements CoHandler {
         if(request.from < 1 || request.to < 1 || request.from > request.to){
             final String error = String.format("[%d, %d] out of range", request.from, request.to);
             response = new FactorialResponse(error);
-            FactorialCodec.encodeResponse(co, buffer, response);
+            FactorialCodec.encodeResponse(co, ob, response);
             return false;
         }
 
         response = doCalc(co, request);
-        FactorialCodec.encodeResponse(co, buffer, response);
+        FactorialCodec.encodeResponse(co, ob, response);
         return false;
     }
 

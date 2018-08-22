@@ -28,38 +28,11 @@ import java.nio.ByteBuffer;
 public class FactorialCodec {
     final static Logger log = LoggerFactory.getLogger(FactorialCodec.class);
 
-    public final static String encoding = ChannelCodec.ASCII;
+    public final static String encoding = ChannelCodec.UTF_8;
+    public final static byte CMD_CALC = 0x01;
 
     public final static FactorialRequest decodeRequest(Continuation co, ByteBuffer buffer)throws IOException {
         final CoChannel channel = (CoChannel)co.getContext();
-
-        // ping?
-        buffer.clear();
-        buffer.limit(1);
-        int n = channel.read(co, buffer);
-        if(n == -1){
-            throw new EOFException("Peer closed");
-        }
-        buffer.flip();
-        if(CoProxyHeartbeatCodec.CMD_PING == (buffer.get() & 0xff)){
-            buffer.clear();
-            buffer.limit(4);
-            for(;buffer.position() < 4;){
-                n = channel.read(co, buffer);
-                if(n == -1){
-                    throw new EOFException("Peer closed");
-                }
-            }
-            buffer.flip();
-            final String ping = new String(buffer.array(), 0, 4, ChannelCodec.ASCII);
-            if("ping".equals(ping)){
-                log.info("{}: Receive {}", channel.name(), ping);
-                channel.write(co, ByteBuffer.wrap("pong".getBytes(ChannelCodec.ASCII)));
-                return null;
-            }
-            throw new IOException("Not ping message");
-        }
-        buffer.clear();
 
         // Receive: From(4), To(4)
         for(;buffer.position() < 8;){
@@ -84,9 +57,9 @@ public class FactorialCodec {
         if(channel == null){
             throw new NullPointerException("channel null");
         }
-        // CMD_CALC: 0x01
+        // CMD_CALC
         buffer.clear();
-        buffer.put((byte)1);
+        buffer.put(CMD_CALC);
         buffer.flip();
         channel.write(co, buffer);
         buffer.clear();
@@ -102,6 +75,7 @@ public class FactorialCodec {
 
     public final static FactorialResponse decodeResponse(Continuation co, ByteBuffer buffer)throws IOException {
         final CoChannel channel = (CoChannel)co.getContext();
+        buffer.clear();
 
         // Receive: LEN(4), status, result
         for(;buffer.position() < 4;){
@@ -144,6 +118,7 @@ public class FactorialCodec {
     public final static int encodeResponse(Continuation co, ByteBuffer buffer,
                                            FactorialResponse response)throws IOException {
         final CoChannel channel = (CoChannel)co.getContext();
+        buffer.clear();
 
         final ByteBuffer result;
         final byte status;
@@ -162,6 +137,7 @@ public class FactorialCodec {
         buffer.put(status);
         buffer.flip();
         channel.write(co, buffer);
+        buffer.clear();
         channel.write(co, result);
 
         return response.size = result.capacity() + 5;

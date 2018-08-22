@@ -18,6 +18,7 @@ package io.conio.util;
 
 import java.io.Closeable;
 import java.io.IOException;
+import java.nio.ByteBuffer;
 
 public final class IoUtils {
 
@@ -29,6 +30,49 @@ public final class IoUtils {
                 closeable.close();
             }catch (IOException e){}
         }
+    }
+
+    public final static ByteBuffer copyToInBuffer(ByteBuffer src, ByteBuffer unused){
+        if(unused == src){
+            return unused;
+        }
+        if(src != null){
+            unused.put(src);
+        }
+        unused.flip();
+        return unused;
+    }
+
+    public final static ByteBuffer copyToOutBuffer(ByteBuffer src, ByteBuffer unused){
+        if(unused == src){
+            return unused;
+        }
+        if(src != null){
+            unused.put(src);
+        }
+        return unused;
+    }
+
+    public final static String dumphex(final ByteBuffer buffer){
+        final ByteBuffer slice = buffer.slice();
+        final StringBuilder buf = new StringBuilder();
+        int i = 0;
+        for(; slice.hasRemaining(); ){
+            final byte b = slice.get();
+            if(i > 0){
+                buf.append(' ');
+            }
+            buf.append(String.format("%02X", b));
+            if(i == 15){
+                i = 0;
+                if(slice.hasRemaining()) {
+                    buf.append('\n');
+                }
+                continue;
+            }
+            ++i;
+        }
+        return buf.toString();
     }
 
 }

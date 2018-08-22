@@ -50,6 +50,7 @@ public class CoGroup {
     private String host;
     private int port = 9696;
     private int backlog = 1000;
+    private int bufferSize = 4096;
 
     private volatile boolean stopped;
     private volatile boolean shutdown;
@@ -412,11 +413,11 @@ public class CoGroup {
 
         protected void cleanup(){
             coGroup.stopped = true;
-            coGroup.ioGroup = null;
             coQueue.clear();
             coGroup.timerService.shutdown();
             coGroup.closePullChannelPool();
             coGroup.workerThreadPool.shutdown();
+            coGroup.ioGroup = null;
             log.info("{}: Stopped",  name);
         }
 
@@ -1723,6 +1724,10 @@ public class CoGroup {
         return backlog;
     }
 
+    public int getBufferSize(){
+        return bufferSize;
+    }
+
     public int getWorkerThreads(){
         return workerThreads;
     }
@@ -1769,6 +1774,11 @@ public class CoGroup {
 
         public Builder setBacklog(int backlog){
             group.backlog = backlog;
+            return this;
+        }
+
+        public Builder setBufferSize(int bufferSize){
+            group.bufferSize = bufferSize;
             return this;
         }
 
@@ -1830,6 +1840,11 @@ public class CoGroup {
             final int workerThreads = group.getWorkerThreads();
             if(workerThreads < 1){
                 throw new IllegalArgumentException("workerThreads smaller than 1: " + workerThreads);
+            }
+
+            final int bufferSize = group.getBufferSize();
+            if(bufferSize < 1){
+                throw new IllegalArgumentException("bufferSize smaller than 1: " + bufferSize);
             }
 
             if(pullChannelPoolBuilder != null) {

@@ -47,6 +47,16 @@ public interface CoChannel extends Closeable {
     int read(Continuation co, ByteBuffer dst) throws IOException;
     int write(Continuation co, ByteBuffer src) throws IOException;
 
+    ByteBuffer inBuffer();
+    CoChannel inBuffer(ByteBuffer buffer);
+
+    ByteBuffer outBuffer();
+    CoChannel outBuffer(ByteBuffer buffer);
+
+    default ByteBuffer allocate(int size){
+        return ByteBuffer.allocate(size);
+    }
+
     boolean isOpen();
 
     @Override

@@ -25,7 +25,6 @@ import org.slf4j.Logger;
 import java.io.IOException;
 import java.math.BigInteger;
 import java.net.InetSocketAddress;
-import java.nio.ByteBuffer;
 import java.util.*;
 import java.util.concurrent.ExecutionException;
 
@@ -84,9 +83,9 @@ public class FactorialProxyHandler extends FactorialServerHandler {
                 log.debug("Send to backend: request {}", req);
                 final CoFuture<FactorialResponse> cf = chan.execute((c) -> {
                     try{
-                        final ByteBuffer buf = ByteBuffer.allocate(64);
-                        FactorialCodec.encodeRequest(c, buf, req);
-                        return FactorialCodec.decodeResponse(c, buf);
+                        final CoChannel ch = (CoChannel)c.getContext();
+                        FactorialCodec.encodeRequest(c, ch.outBuffer(), req);
+                        return FactorialCodec.decodeResponse(c, ch.inBuffer());
                     }catch (final IOException e){
                         throw new RuntimeException(e);
                     }

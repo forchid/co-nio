@@ -94,11 +94,14 @@ public class PullCoRunner extends CoRunner {
         }else{
             stopped = true;
         }
-        resume();
     }
 
     @Override
     public void run(Continuation co){
+        if(isStopped()){
+            log.warn("{}: Has been stopped", name);
+            return;
+        }
         if(wrapped != null){
             throw new IllegalStateException("Can't run PullCoRunner wrapper");
         }
