@@ -1356,18 +1356,15 @@ public class CoGroup {
 
             @Override
             public void completed(Void none, ConnectRequest request) {
-                final AioConnectHandler handler = new AioConnectHandler(aioGroup, request);
-                handler.channel = channel;
-                handler.future  = future;
-                aioGroup.offer(handler);
+                // This handler thread-safe is guaranteed by CoQueue.
+                // @since 2018-09-02 little-pan
+                aioGroup.offer(this);
             }
 
             @Override
             public void failed(Throwable cause, ConnectRequest request) {
-                final AioConnectHandler handler = new AioConnectHandler(aioGroup, request);
-                handler.cause  = cause;
-                handler.future = future;
-                aioGroup.offer(handler);
+                this.cause  = cause;
+                aioGroup.offer(this);
             }
         }
 
