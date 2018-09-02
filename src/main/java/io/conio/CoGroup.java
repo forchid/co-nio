@@ -493,26 +493,27 @@ public class CoGroup {
 
         @Override
         protected void setDone(boolean done){
-            // always false - listeners maybe change the value or cause
-            // @author little-pan
-            // @since 2018-08-19
-            this.done = false;
+            this.done = done;
         }
 
         @Override
         public CoFutureImpl<V> setCause(Throwable cause){
-            super.setCause(cause);
+           this.cause = cause;
             return this;
         }
 
         @Override
         public CoFutureImpl<V> setValue(V value){
-            super.setValue(value);
+            this.value = value;
             return this;
         }
 
         @Override
         public void run() {
+            if(isDone()){
+                return;
+            }
+
             try {
                 if (listeners != null) {
                     for (CoFutureListener<V> lsn : listeners) {
@@ -522,7 +523,7 @@ public class CoGroup {
             } catch (final Throwable e){
                 log.warn("Co future listener error", e);
             } finally {
-                this.done = true;
+                setDone(true);
                 if(waiter != null && waited){
                     waiter.resume();
                 }
