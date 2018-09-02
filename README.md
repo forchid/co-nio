@@ -23,8 +23,8 @@ final CoGroup serverGroup = CoGroup.newBuilder()
          }
      })
     .build();
-    serverGroup.start();
-```Java
+serverGroup.start();
+```
 The server handler,
 ```Java
 public class EchoServerHandler implements CoHandler {
@@ -67,7 +67,7 @@ public class EchoServerHandler implements CoHandler {
     }
 
 }
-```Java
+```
 Then boot the client,
 ```Java
 final CoGroup clientGroup = CoGroup.newBuilder()
@@ -87,7 +87,7 @@ final CoGroup clientGroup = CoGroup.newBuilder()
 
     clientGroup.shutdown();
     clientGroup.await();
-```Java
+```
 The client handler,
 ```Java
 public class EchoClientHandler extends BaseTest implements CoHandler {
@@ -145,4 +145,4 @@ public class EchoClientHandler extends BaseTest implements CoHandler {
     }
 
 }
-```Java
+```
