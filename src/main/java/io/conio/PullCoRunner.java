@@ -151,8 +151,6 @@ public class PullCoRunner extends CoRunner {
     static class CoFutureTask<V> extends AbstractCoFuture<V> {
         final CoCallable<V> coCallable;
 
-        private boolean done;
-
         public CoFutureTask(final CoCallable<V> coCallable){
             super(null);
             this.coCallable = coCallable;
@@ -169,11 +167,6 @@ public class PullCoRunner extends CoRunner {
         public CoFuture<V> setValue(Object value){
             super.setValue((V)value);
             return this;
-        }
-
-        @Override
-        public boolean isDone() {
-            return done;
         }
 
         @Override

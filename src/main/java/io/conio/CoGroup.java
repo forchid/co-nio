@@ -480,20 +480,8 @@ public class CoGroup {
     static class CoFutureImpl<V> extends AbstractCoFuture<V> implements CoTask {
         final static Logger log = LoggerFactory.getLogger(CoFutureImpl.class);
 
-        private volatile boolean done;
-
         public CoFutureImpl(CoRunner waiter){
             super(waiter);
-        }
-
-        @Override
-        public boolean isDone() {
-            return done;
-        }
-
-        @Override
-        protected void setDone(boolean done){
-            this.done = done;
         }
 
         @Override
@@ -511,7 +499,7 @@ public class CoGroup {
         @Override
         public void run() {
             if(isDone()){
-                return;
+                throw new IllegalArgumentException("The feature has been done");
             }
 
             try {

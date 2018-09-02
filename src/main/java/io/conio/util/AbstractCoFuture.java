@@ -38,6 +38,9 @@ public abstract class AbstractCoFuture<V> implements CoFuture<V> {
     protected CoRunner waiter;
     protected boolean waited;
 
+    // The var done thread-safe guaranteed by blockingQueue.
+    // @since 2018-09-02 little-pan
+    protected boolean done;
     protected V value;
     protected Throwable cause;
 
@@ -69,7 +72,14 @@ public abstract class AbstractCoFuture<V> implements CoFuture<V> {
         return value;
     }
 
-    protected abstract void setDone(boolean done);
+    @Override
+    public boolean isDone() {
+        return done;
+    }
+
+    protected void setDone(boolean done){
+        this.done = done;
+    }
 
     public CoFuture<V> setCause(Throwable cause){
         this.cause = cause;
