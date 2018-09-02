@@ -12,7 +12,7 @@ A simple nio framework based on coroutines
 
 ## a sample
 First we boot the server,
-```
+```Java
 final CoGroup serverGroup = CoGroup.newBuilder()
     .setHost(HOST)
     .setName("serverCoGroup")
@@ -23,10 +23,10 @@ final CoGroup serverGroup = CoGroup.newBuilder()
          }
      })
     .build();
-     serverGroup.start();
-```
+    serverGroup.start();
+```Java
 The server handler,
-```
+```Java
 public class EchoServerHandler implements CoHandler {
     final static Logger log = LoggerFactory.getLogger(EchoServerHandler.class);
 
@@ -67,9 +67,9 @@ public class EchoServerHandler implements CoHandler {
     }
 
 }
-```
+```Java
 Then boot the client,
-```
+```Java
 final CoGroup clientGroup = CoGroup.newBuilder()
     .setName("clientCoGroup")
     .build();
@@ -87,9 +87,9 @@ final CoGroup clientGroup = CoGroup.newBuilder()
 
     clientGroup.shutdown();
     clientGroup.await();
-```
+```Java
 The client handler,
-```
+```Java
 public class EchoClientHandler extends BaseTest implements CoHandler {
     final static Logger log = LoggerFactory.getLogger(EchoClientHandler.class);
 
@@ -145,4 +145,4 @@ public class EchoClientHandler extends BaseTest implements CoHandler {
     }
 
 }
-```
+```Java
