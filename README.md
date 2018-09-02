@@ -10,7 +10,7 @@ A simple nio framework based on coroutines
 6. Coroutine and coroutine channel timer.
 7. Pull coroutine channel connection pool.
 
-### a sample
+## a sample
 First we boot the server,
 ```
 final CoGroup serverGroup = CoGroup.newBuilder()
@@ -45,6 +45,7 @@ public class EchoServerHandler implements CoHandler {
         final PushCoChannel channel = (PushCoChannel)co.getContext();
         try{
             for(;!channel.group().isShutdown();){
+                // co-blocking read but not thread-blocking
                 final int n = channel.read(co, buffer);
                 if(n == -1){
                     break;
@@ -52,6 +53,7 @@ public class EchoServerHandler implements CoHandler {
                 //log.debug("{}: recv {} bytes", channel.name, n);
                 buffer.flip();
                 for(;buffer.hasRemaining();) {
+                    // co-blocking write but not thread-blocking
                     final int i = channel.write(co, buffer);
                     //log.debug("{}: send {} bytes", channel.name, i);
                 }
@@ -77,6 +79,7 @@ final CoGroup clientGroup = CoGroup.newBuilder()
     final EchoClientHandler handlers[] = new EchoClientHandler[n];
     for(int i = 0; i < n; ++i){
         final EchoClientHandler handler = new EchoClientHandler(1024);
+        // async-connect
         clientGroup.connect(HOST, PORT, handler);
         handlers[i] = handler;
     }
@@ -113,12 +116,14 @@ public class EchoClientHandler extends BaseTest implements CoHandler {
             final CoGroup group = channel.group();
             for(;!group.isShutdown();){
                 for(;dbuf.hasRemaining();){
+                    // co-blocking write but not thread-blocking
                     final int n = channel.write(co, dbuf);
                     bytes += n;
                     //log.debug("{}: send {} bytes", channel.name, n);
                 }
                 dbuf.flip();
                 for(;buffer.hasRemaining();){
+                    // co-blocking read but not thread-blocking
                     final int n = channel.read(co, buffer);
                     if(n == -1){
                         throw new EOFException("Server closed");
